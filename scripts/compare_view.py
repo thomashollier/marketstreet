@@ -4,25 +4,27 @@
     python scripts/compare_view.py outputs/<movie>/LoGeR_star/aligned_tumbled \\
                                    outputs/<movie>/lingbot-map/aligned_tumbled
 
-Each reconstruction opens in its own window, in its own process (own GL context,
-own event loop), and the two keep their cameras identical over a pipe: every
-camera change is sent as the complete camera state, so there is no leader and
-nothing to drift. Open3D's own mouse controller is switched off (events are
-consumed) and replaced by the small `Orbit` controller below, so both processes
-move exactly the same way. Closing either window closes both.
+Each reconstruction opens in its own window in its own process, using Open3D's
+classic Visualizer (the same one scripts/view_ply.py uses, so the mouse feels the
+same). The two keep their cameras identical over a pipe: each process watches its
+own camera, and when it changes (you dragged, scrolled ...) sends the new camera
+matrix to the other, which applies it. Only the 4x4 matrix is exchanged, so window
+sizes may differ, and changes below a tiny tolerance are ignored so the windows
+cannot echo each other. Closing either window closes both.
 
 Each folder needs points.ply (+ poses.npz, recommended). Each cloud is shifted so
 its first camera is at the origin and scaled so its camera path has length 1
 (the models' scales differ), so differences show up as shape, not size.
-The red line is the camera path.
+The red line is the camera path (--no-path to hide it).
 
-  left-drag orbit | right-drag or ctrl+left-drag pan | wheel zoom
-  R reset view | P toggle camera path | + / - point size   (all synced)
-Starts at the first camera, looking down the camera path.
+Open3D's usual mouse/keys apply: left-drag orbit, wheel zoom, ctrl+left-drag or
+shift+left-drag pan, +/- point size (synced). R resets both to a view from the
+first camera looking down the camera path.
 """
 import argparse
 import multiprocessing
 import pathlib
+import queue
 import sys
 import time
 
@@ -31,66 +33,13 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from align_to_path import read_ply   # noqa: E402
 
-FOV = 60.0
+TOL = 1e-4          # max abs change in the 4x4 camera matrix that counts as "the camera moved"
+START_DIST = 0.3    # initial look-at point, in path lengths ahead of the first camera
 
 
 def _unit(v):
     v = np.asarray(v, float)
     return v / np.linalg.norm(v)
-
-
-def _rot(v, axis, ang):
-    """Rodrigues rotation of v about a unit axis."""
-    return v * np.cos(ang) + np.cross(axis, v) * np.sin(ang) + axis * (axis @ v) * (1 - np.cos(ang))
-
-
-class Orbit:
-    """Turntable-style camera: yaw about the scene's up axis, pitch about the camera's right axis."""
-    ROTATE = 0.005      # radians per pixel
-    ZOOM = 0.9          # distance factor per wheel notch
-
-    def __init__(self, up, forward, dist=0.3):
-        self.world_up = _unit(up)
-        self._init = (_unit(forward) * dist, -_unit(forward), self.world_up.copy(), dist)
-        self.reset()
-
-    def reset(self):
-        self.target, self.dir, self.up = (np.array(x, float) for x in self._init[:3])
-        self.dist = self._init[3]
-
-    def state(self):
-        """Complete camera state as plain lists (picklable, sent over the pipe)."""
-        return {"target": self.target.tolist(), "dir": self.dir.tolist(), "up": self.up.tolist(),
-                "dist": float(self.dist)}
-
-    def set_state(self, s):
-        self.target, self.dir, self.up = (np.array(s[k], float) for k in ("target", "dir", "up"))
-        self.dist = float(s["dist"])
-
-    @property
-    def eye(self):
-        return self.target + self.dist * self.dir
-
-    def _basis(self):
-        f = -self.dir
-        r = _unit(np.cross(f, self.up))
-        return f, r, np.cross(r, f)
-
-    def rotate(self, dx, dy):
-        a = -dx * self.ROTATE
-        self.dir, self.up = _rot(self.dir, self.world_up, a), _rot(self.up, self.world_up, a)
-        _, r, _ = self._basis()
-        b = -dy * self.ROTATE
-        self.dir, self.up = _rot(self.dir, r, b), _rot(self.up, r, b)
-        self.dir, self.up = _unit(self.dir), _unit(self.up - (self.up @ self.dir) * self.dir)
-
-    def pan(self, dx, dy, height_px):
-        per_px = 2 * self.dist * np.tan(np.radians(FOV) / 2) / height_px
-        _, r, u = self._basis()
-        self.target = self.target - r * dx * per_px + u * dy * per_px
-
-    def zoom(self, notches):
-        self.dist *= self.ZOOM ** notches
 
 
 def load_pane(d, max_points):
@@ -119,7 +68,7 @@ def load_pane(d, max_points):
 
 
 def start_view(d):
-    """(up, forward) of the first camera path, from the average camera pose."""
+    """(up, forward) of the camera path, from the average camera pose (OpenCV axes: y down, z forward)."""
     f = pathlib.Path(d) / "poses.npz"
     if not f.exists():
         return [0, -1, 0], [0, 0, 1]
@@ -127,133 +76,105 @@ def start_view(d):
     return (-_unit(P[:, :3, 1].mean(0))).tolist(), _unit(P[:, :3, 2].mean(0)).tolist()
 
 
-def viewer(idx, d, conn, up, forward, rect, max_points, no_downsample):
+def viewer(idx, d, conn, up, forward, rect, max_points, show_path):
     """One window in one process. `conn` is the pipe to the other viewer."""
+    import faulthandler
     import threading
+    faulthandler.enable()               # a native crash prints which Python line it happened in
     import open3d as o3d
-    gui, rendering = o3d.visualization.gui, o3d.visualization.rendering
     pane = load_pane(d, max_points)
-    cam = Orbit(up, forward)
-    app = gui.Application.instance
-    app.initialize()
+    up, forward = _unit(up), _unit(forward)
     x, y, width, height = rect
-    win = app.create_window(pane["name"], width, height, x, y)
-    CONSUMED, HANDLED = gui.Widget.EventCallbackResult.CONSUMED, gui.Widget.EventCallbackResult.HANDLED
-    state = {"size": 2.0, "path": True, "last": (0, 0)}
 
-    w = gui.SceneWidget()
-    w.scene = rendering.Open3DScene(win.renderer)
-    w.enable_scene_caching(False)       # we move the camera ourselves; cached frames would look stale
-    w.scene.set_background([0.05, 0.05, 0.06, 1.0])
-    m = rendering.MaterialRecord()
-    m.shader, m.point_size = "defaultUnlit", state["size"] * win.scaling
-    w.scene.add_geometry("pts", pane["pcd"], m, not no_downsample)
-    if pane["path"] is not None:
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    if not vis.create_window(f"{pane['name']} - {pane['count']:,} pts", width, height, x, y):
+        raise RuntimeError("Open3D could not create a window")
+    vis.add_geometry(pane["pcd"])
+    if show_path and pane["path"] is not None:
         ls = o3d.geometry.LineSet()
         ls.points = o3d.utility.Vector3dVector(pane["path"])
         ls.lines = o3d.utility.Vector2iVector(np.c_[np.arange(len(pane["path"]) - 1), np.arange(1, len(pane["path"]))])
-        lm = rendering.MaterialRecord()
-        lm.shader, lm.line_width, lm.base_color = "unlitLine", 2.0 * win.scaling, [1.0, 0.2, 0.2, 1.0]
-        w.scene.add_geometry("path", ls, lm)
-    win.add_child(w)
-    lab = gui.Label(f"{pane['name']} - {pane['count']:,} pts")
-    lab.text_color = gui.Color(1, 1, 1)
-    win.add_child(lab)
+        ls.paint_uniform_color([1.0, 0.2, 0.2])
+        vis.add_geometry(ls, reset_bounding_box=False)
+    ro, vc = vis.get_render_option(), vis.get_view_control()
+    ro.background_color = np.array([0.05, 0.05, 0.06])
+    ro.point_size = 2.0
+
+    inbox = queue.SimpleQueue()
+    st = {"init": False, "last": None, "size": None}
+
+    def ext():
+        return np.asarray(vc.convert_to_pinhole_camera_parameters().extrinsic, dtype=float).copy()
 
     def send(msg):
         try:
             conn.send(msg)
         except (OSError, ValueError):
-            pass            # the other window is already gone
+            pass                        # the other window is already gone
 
-    def apply():
-        w.look_at(cam.target.astype(np.float32), cam.eye.astype(np.float32), cam.up.astype(np.float32))
-        win.post_redraw()
+    def reset_view():
+        """From the first camera, looking down the path. Distance is fixed up from the camera matrix itself."""
+        look = forward * START_DIST
+        zoom = 0.2
+        vc.set_lookat(look)
+        vc.set_front(-forward)
+        vc.set_up(up)
+        vc.set_zoom(zoom)
+        E = ext()
+        eye = -E[:3, :3].T @ E[:3, 3]
+        dist = np.linalg.norm(eye - look)
+        if dist > 1e-9:
+            vc.set_zoom(zoom * START_DIST / dist)
 
-    def set_size(v):
-        state["size"] = v
-        m.point_size = v * win.scaling
-        w.scene.modify_geometry_material("pts", m)
+    def tick(_vis):                     # called every frame, on the GUI thread
+        if not st["init"]:
+            reset_view()
+            st.update(init=True, last=None if idx == 0 else ext(), size=ro.point_size)
+        cam = size = None
+        while True:                     # newest message of each kind wins
+            try:
+                msg = inbox.get_nowait()
+            except queue.Empty:
+                break
+            if "quit" in msg:
+                vis.close()
+                return False
+            cam = msg.get("cam", cam)
+            size = msg.get("size", size)
+        if cam is not None:
+            p = vc.convert_to_pinhole_camera_parameters()
+            cam = np.asarray(cam, dtype=float)
+            if np.abs(cam - np.asarray(p.extrinsic)).max() > TOL:
+                p.extrinsic = cam
+                vc.convert_from_pinhole_camera_parameters(p, True)
+            st["last"] = ext()          # remember what it reads back as, so it is not echoed
+        if size is not None:
+            ro.point_size = st["size"] = size
+        e = ext()                       # anything else that moved the camera is the user: tell the other window
+        if st["last"] is None or np.abs(e - st["last"]).max() > TOL:
+            send({"cam": e.tolist()})
+            st["last"] = e
+        if ro.point_size != st["size"]:
+            st["size"] = ro.point_size
+            send({"size": st["size"]})
+        return False
 
-    def set_path(v):
-        state["path"] = v
-        if pane["path"] is not None:
-            w.scene.show_geometry("path", v)
-
-    def on_layout(ctx):
-        r = win.content_rect
-        w.frame = gui.Rect(r.x, r.y, r.width, r.height)
-        lab.frame = gui.Rect(r.x + 10, r.y + 8, r.width - 20, 24)
-        w.scene.camera.set_projection(FOV, r.width / max(r.height, 1), 0.005, 500.0,
-                                      rendering.Camera.FovType.Vertical)
-        apply()
-
-    def on_mouse(e):
-        T = gui.MouseEvent.Type
-        if e.type == T.BUTTON_DOWN:
-            state["last"] = (e.x, e.y)
-        elif e.type == T.DRAG:
-            dx, dy = e.x - state["last"][0], e.y - state["last"][1]
-            state["last"] = (e.x, e.y)
-            if e.is_button_down(gui.MouseButton.RIGHT) or e.is_modifier_down(gui.KeyModifier.CTRL):
-                cam.pan(dx, dy, win.content_rect.height)
-            else:
-                cam.rotate(dx, dy)
-            apply()
-            send({"cam": cam.state()})
-        elif e.type == T.WHEEL:
-            cam.zoom(e.wheel_dy)
-            apply()
-            send({"cam": cam.state()})
-        return CONSUMED     # keep Open3D's own (unsynchronised) controller out of it
-
-    def on_key(e):
-        if e.type != gui.KeyEvent.Type.DOWN:
-            return HANDLED
-        if e.key == gui.KeyName.R:
-            cam.reset()
-            apply()
-            send({"cam": cam.state()})
-        elif e.key == gui.KeyName.P:
-            set_path(not state["path"])
-            send({"path": state["path"]})
-        elif e.key in (gui.KeyName.EQUALS, gui.KeyName.MINUS):
-            set_size(max(1.0, state["size"] + (0.5 if e.key == gui.KeyName.EQUALS else -0.5)))
-            send({"size": state["size"]})
-        return HANDLED
-
-    def handle(msg):                        # runs on the GUI thread
-        if "quit" in msg:
-            app.quit()
-            return
-        if "cam" in msg:
-            cam.set_state(msg["cam"])
-            apply()
-        if "size" in msg:
-            set_size(msg["size"])
-        if "path" in msg:
-            set_path(msg["path"])
-
-    def listen():                           # blocks on the pipe, hands each message to the GUI thread
+    def listen():                       # blocks on the pipe; the GUI thread picks messages up from `inbox`
         while True:
             try:
                 msg = conn.recv()
             except (EOFError, OSError):
                 msg = {"quit": True}
-            app.post_to_main_thread(win, lambda m=msg: handle(m))
+            inbox.put(msg)
             if "quit" in msg:
                 return
 
-    def on_close():
-        send({"quit": True})
-        return True
-
-    w.set_on_mouse(on_mouse)
-    w.set_on_key(on_key)
-    win.set_on_layout(on_layout)
-    win.set_on_close(on_close)
+    vis.register_key_callback(ord("R"), lambda _v: reset_view() or False)
+    vis.register_animation_callback(tick)
     threading.Thread(target=listen, daemon=True).start()
-    app.run()
+    vis.run()
+    send({"quit": True})
+    vis.destroy_window()
 
 
 def main():
@@ -263,8 +184,7 @@ def main():
     ap.add_argument("--max-points", type=int, default=1_000_000, help="per cloud, random subsample")
     ap.add_argument("--width", type=int, default=780, help="width of each window")
     ap.add_argument("--height", type=int, default=800)
-    ap.add_argument("--no-downsample", action="store_true",
-                    help="always render every point (Open3D otherwise draws a thinned copy while you interact)")
+    ap.add_argument("--no-path", action="store_true", help="don't draw the camera path")
     a = ap.parse_args()
 
     up, forward = start_view(a.left)        # shared start view, from the left cloud's cameras
@@ -272,7 +192,7 @@ def main():
     c0, c1 = ctx.Pipe()
     procs = [ctx.Process(target=viewer,
                          args=(i, d, c, up, forward, (20 + i * (a.width + 20), 40, a.width, a.height),
-                               a.max_points, a.no_downsample))
+                               a.max_points, not a.no_path))
              for i, (d, c) in enumerate(((a.left, c0), (a.right, c1)))]
     for p in procs:
         p.start()

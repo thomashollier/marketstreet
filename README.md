@@ -35,17 +35,18 @@ running along -Z); that goes to `aligned_tumbled/` so the plain aligned result i
 
 ## Compare two results side by side
 
-Two Open3D windows, one per process (own GL context each), kept on an identical camera over a pipe: orbit / pan / zoom in
-either window moves both, and `R` / `P` / `+` `-` are synced too. Each cloud is normalised (first camera at the origin, camera
-path length 1) because the models' scales differ. Closing either window closes both.
+Two Open3D windows, one per process, using Open3D's classic Visualizer (the one `view_ply.py` uses). Each process watches its own
+camera and sends the 4x4 camera matrix to the other over a pipe, so orbit / pan / zoom in either window moves both; `+`/`-`
+point size is synced, `R` resets both to a view from the first camera looking down the path, closing either closes both.
+Each cloud is normalised (first camera at the origin, camera path length 1) because the models' scales differ.
 
 ```bash
 python scripts/compare_view.py outputs/<movie>/LoGeR_star/aligned_tumbled outputs/<movie>/lingbot-map/aligned_tumbled
 ```
 
-Left-drag orbit, right-drag or ctrl+left-drag pan, wheel zoom; `R` reset, `P` toggle the red camera path, `+`/`-` point size.
-Options: `--max-points` (default 1,000,000 per cloud), `--width/--height` per window, `--no-downsample` (draw every point
-while interacting). The camera logic and the sync protocol are tested with stand-in windows; real rendering is not.
+Options: `--max-points` (default 1,000,000 per cloud), `--width/--height` per window, `--no-path` (hide the red camera path).
+The sync protocol is tested with stand-in windows; real rendering is not. A native crash prints a Python traceback
+(`faulthandler`); paste it if you hit one.
 
 ## LingBot-Map instead of LoGeR
 
