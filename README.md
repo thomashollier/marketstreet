@@ -31,6 +31,25 @@ intrinsics**, which `poses.npz` stores (`intrinsics`, `image_size`), so its outp
 Options: `--fps` (frames per second sampled, 0 = every frame; default 10), `--mode streaming|windowed`,
 `--keyframe-interval` (0 = auto). It uses PyTorch attention rather than FlashInfer.
 
+## Without Modal (plain Docker)
+
+`docker/` has the same two images as Dockerfiles, plus an entrypoint that does what the Modal functions do
+(fetch weights, optional `--last-seconds` trim, run, export) against a mounted `work/` folder with the same
+layout as the volume. Needs an NVIDIA GPU and the NVIDIA Container Toolkit.
+
+```bash
+docker build -f docker/Dockerfile.loger   -t marketstreet-loger .
+docker build -f docker/Dockerfile.lingbot -t marketstreet-lingbot .
+
+mkdir -p work/clip/input && cp ./clip.mov work/clip/input/
+docker run --rm --gpus all -v "$PWD/work:/work" marketstreet-loger   /work/clip/input/clip.mov --last-seconds 10
+docker run --rm --gpus all -v "$PWD/work:/work" marketstreet-lingbot /work/clip/input/clip.mov --last-seconds 10
+# results: work/clip_last10s/{LoGeR_star,lingbot-map}/{points.ply,poses.npz,trajectory.txt}
+```
+
+`--dry-run` prints the commands without running them; `--help` lists the options. The Dockerfiles, `docker/entrypoint.py`
+and `modal_app.py` duplicate each other's steps, so keep them in sync (pinned commit SHAs, pip pins). Not built or run yet.
+
 ## Outputs on the volume (`<movie>` = filename stem)
 
 | path | contents |

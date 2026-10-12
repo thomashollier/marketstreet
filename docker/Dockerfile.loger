@@ -1,0 +1,25 @@
+# LoGeR, mirroring `loger_image` in modal_app.py.
+# Build from the repo root:  docker build -f docker/Dockerfile.loger -t marketstreet-loger .
+# GPU: needs the NVIDIA Container Toolkit on the host (torch wheels bundle CUDA).
+FROM python:3.11-slim-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ffmpeg libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Upstream is not pip-installable: clone it and run from /opt/loger so that
+# `import loger` and ckpts/<variant>/original_config.yaml resolve. Keep in sync
+# with LOGER_SHA in modal_app.py.
+ARG LOGER_SHA=7685b7a41949e62ed8a69309642465aee4cb89ba
+RUN git clone https://github.com/Junyi42/LoGeR /opt/loger \
+ && git -C /opt/loger checkout "$LOGER_SHA" \
+ && pip install --no-cache-dir -r /opt/loger/requirements.txt
+
+# imported by loger/ but missing from upstream's requirements.txt
+RUN pip install --no-cache-dir omegaconf onnxruntime requests tqdm
+
+COPY scripts /app/scripts
+COPY docker/entrypoint.py /app/entrypoint.py
+ENV MODEL=loger PYTHONUNBUFFERED=1
+WORKDIR /opt/loger
+ENTRYPOINT ["python", "/app/entrypoint.py"]

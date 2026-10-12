@@ -1,0 +1,29 @@
+# LingBot-Map, mirroring `lingbot_image` in modal_app.py.
+# Build from the repo root:  docker build -f docker/Dockerfile.lingbot -t marketstreet-lingbot .
+# GPU: needs the NVIDIA Container Toolkit on the host (torch wheels bundle CUDA).
+FROM python:3.10-slim-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ffmpeg libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+# torch 2.8.0 / cu128 (LoGeR uses 2.6.0, hence two images)
+RUN pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \
+      --index-url https://download.pytorch.org/whl/cu128
+
+# upstream is tested with numpy<2; unpinned, opencv-python resolves to 5.x and
+# drags numpy up to 2.2.
+RUN pip install --no-cache-dir "numpy<2" "opencv-python<4.12"
+
+# Keep in sync with LINGBOT_SHA in modal_app.py. Attention runs on PyTorch SDPA;
+# FlashInfer is not installed.
+ARG LINGBOT_SHA=6e6b0630c42a9505b891b881b21fd26a6cfff9f3
+RUN git clone https://github.com/robbyant/lingbot-map /opt/lingbot-map \
+ && git -C /opt/lingbot-map checkout "$LINGBOT_SHA" \
+ && pip install --no-cache-dir -e /opt/lingbot-map
+
+COPY scripts /app/scripts
+COPY docker/entrypoint.py /app/entrypoint.py
+ENV MODEL=lingbot PYTHONUNBUFFERED=1
+WORKDIR /opt/lingbot-map
+ENTRYPOINT ["python", "/app/entrypoint.py"]
