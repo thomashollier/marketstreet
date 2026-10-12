@@ -12,6 +12,10 @@ movie file on local disk):
 
     modal run modal_app.py::pull --movie clip               # download results
 
+    # same movie through LingBot-Map instead (https://github.com/robbyant/lingbot-map)
+    modal run modal_app.py::run --video ./clip.mp4 --model lingbot --last-seconds 10
+    modal run modal_app.py::pull --movie clip_last10s --variant lingbot-map
+
 Layout on the volume (movie = video filename stem):
 
     /work/ckpts/<variant>/latest.pt        model weights, downloaded once
@@ -20,6 +24,8 @@ Layout on the volume (movie = video filename stem):
     /work/<movie>/<variant>/poses.npz      world_from_cam[N,4,4], frame_idx[N]
     /work/<movie>/<variant>/trajectory.txt TUM-style `ts tx ty tz qx qy qz qw`
     /work/<movie>/<variant>/points.ply     confidence-filtered coloured point cloud
+    (variant = LoGeR | LoGeR_star | lingbot-map; lingbot's poses.npz also holds
+     intrinsics[N,3,3] + image_size, and it has no raw/ dir)
 
 The raw .pt can be re-opened interactively on any machine with the LoGeR repo:
     python demo_viser.py --load <raw dir> --input <video> --model_name x --config x
@@ -40,6 +46,13 @@ LOGER_REPO  = "https://github.com/Junyi42/LoGeR"
 LOGER_SHA   = "7685b7a41949e62ed8a69309642465aee4cb89ba"   # pinned; bump deliberately
 HF_REPO     = "Junyi42/LoGeR"
 VARIANTS    = ["LoGeR", "LoGeR_star"]
+
+LINGBOT_REPO = "https://github.com/robbyant/lingbot-map"
+LINGBOT_SHA  = "6e6b0630c42a9505b891b881b21fd26a6cfff9f3"   # pinned; bump deliberately
+LINGBOT_HF   = "robbyant/lingbot-map"
+LINGBOT_CKPT = "lingbot-map.pt"      # file name inside the HF repo (README names it so)
+LINGBOT_NAME = "lingbot-map"         # "variant" directory for its outputs
+MODELS       = ["loger", "lingbot"]
 
 GPU = os.environ.get("LOGER_GPU", "A100-40GB")
 
@@ -68,6 +81,23 @@ loger_image = (
     .add_local_dir("scripts", "/app/scripts")
 )
 
+# LingBot-Map needs torch 2.8.0 (cu128), LoGeR 2.6.0, so it gets its own image.
+# Attention runs on PyTorch SDPA (upstream's --use_sdpa); FlashInfer would need
+# nvcc for JIT kernels and is not installed.
+lingbot_image = (
+    modal.Image.debian_slim(python_version="3.10")
+    .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0")
+    .pip_install("torch==2.8.0", "torchvision==0.23.0",
+                 index_url="https://download.pytorch.org/whl/cu128")
+    .pip_install("numpy<2")
+    .run_commands(
+        f"git clone {LINGBOT_REPO} /opt/lingbot-map",
+        f"git -C /opt/lingbot-map checkout {LINGBOT_SHA}",
+        "pip install -e /opt/lingbot-map",
+    )
+    .add_local_dir("scripts", "/app/scripts")
+)
+
 app = modal.App(APP_NAME)
 
 
@@ -88,6 +118,16 @@ def _out_movie(movie: str, last_seconds: float) -> str:
     """Volume namespace for results. A tail clip gets its own so runs with
     different --last-seconds don't overwrite each other."""
     return f"{movie}_last{last_seconds:g}s" if last_seconds > 0 else movie
+
+
+def _trim_tail(src, dst, seconds: float):
+    """Cut the last `seconds` of src into an H.264 mp4 at dst (ffmpeg)."""
+    import subprocess
+    pathlib.Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-sseof", f"-{seconds:g}", "-i", str(src),
+         "-an", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p", str(dst)],
+        check=True)
 
 
 @app.function(image=loger_image, gpu=GPU, memory=32768,
@@ -113,12 +153,7 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
     out_movie = _out_movie(movie, last_seconds)
     if last_seconds > 0:
         tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
-        tail.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-sseof", f"-{last_seconds:g}",
-             "-i", str(video), "-an", "-c:v", "libx264", "-crf", "14",
-             "-pix_fmt", "yuv420p", str(tail)],
-            check=True)
+        _trim_tail(video, tail, last_seconds)
         video = tail
 
     out = pathlib.Path(WORK, out_movie, variant)
@@ -178,6 +213,57 @@ def export_only(movie: str, variant: str = "LoGeR_star", start_frame: int = 0,
     return str(out)
 
 
+@app.function(image=cpu_image, volumes={WORK: volume}, timeout=1800)
+def fetch_lingbot_weights() -> str:
+    """Download lingbot-map.pt from Hugging Face onto the volume (once)."""
+    from huggingface_hub import hf_hub_download, list_repo_files
+    from huggingface_hub.utils import EntryNotFoundError
+    d = pathlib.Path(WORK, "ckpts", LINGBOT_NAME)
+    dest = d / LINGBOT_CKPT
+    if not dest.exists():
+        try:
+            hf_hub_download(LINGBOT_HF, LINGBOT_CKPT, local_dir=str(d))
+        except EntryNotFoundError:
+            raise SystemExit(f"{LINGBOT_CKPT} not in {LINGBOT_HF}; files there: "
+                             f"{list_repo_files(LINGBOT_HF)}. Fix LINGBOT_CKPT.")
+        volume.commit()
+    print(f"[lingbot] weights: {dest} ({dest.stat().st_size / 1e9:.2f} GB)", flush=True)
+    return str(dest)
+
+
+@app.function(image=lingbot_image, gpu=GPU, memory=32768,
+              volumes={WORK: volume}, timeout=6 * 3600)
+def reconstruct_lingbot(movie: str, video_name: str, fps: float = 10.0,
+                        mode: str = "streaming", keyframe_interval: int = 0,
+                        conf_percentile: float = 20.0, max_points: int = 2_000_000,
+                        last_seconds: float = 0.0) -> str:
+    """Run scripts/run_lingbot.py (headless LingBot-Map) on the movie."""
+    import subprocess
+
+    volume.reload()
+    video = pathlib.Path(WORK, movie, "input", video_name)
+    ckpt = pathlib.Path(WORK, "ckpts", LINGBOT_NAME, LINGBOT_CKPT)
+    for p in (video, ckpt):
+        if not p.exists():
+            raise FileNotFoundError(f"{p} not on volume")
+
+    out_movie = _out_movie(movie, last_seconds)
+    if last_seconds > 0:
+        tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
+        _trim_tail(video, tail, last_seconds)
+        video = tail
+
+    out = pathlib.Path(WORK, out_movie, LINGBOT_NAME)
+    subprocess.run(
+        ["python", "/app/scripts/run_lingbot.py",
+         "--video", str(video), "--model-path", str(ckpt), "--out", str(out),
+         "--fps", str(fps), "--mode", mode, "--keyframe-interval", str(keyframe_interval),
+         "--conf-percentile", str(conf_percentile), "--max-points", str(max_points)],
+        check=True, cwd="/opt/lingbot-map")
+    volume.commit()
+    return str(out)
+
+
 # ============================  LOCAL ENTRYPOINTS  ===========================
 @app.local_entrypoint()
 def run(video: str,
@@ -191,8 +277,20 @@ def run(video: str,
          conf_percentile: float = 20.0,
          max_points: int = 2_000_000,
          last_seconds: float = 0.0,
+         model: str = "loger",
+         fps: float = 10.0,
+         mode: str = "streaming",
+         keyframe_interval: int = 0,
          skip_upload: bool = False):
     """Upload the movie to the volume, fetch weights if needed, reconstruct.
+
+    --model             loger (default) or lingbot (LingBot-Map). With lingbot, results
+                        are under <movie>/lingbot-map and the options below apply
+                        instead of --variant/--stride/--window-size/--overlap-size/
+                        --reset-every/--start-frame/--end-frame.
+    --fps               (lingbot) frames sampled per second of video, 0 = every frame
+    --mode              (lingbot) streaming, or windowed for very long clips
+    --keyframe-interval (lingbot) 0 = auto (bounds the KV cache beyond 320 frames)
 
     --last-seconds      use only the last N seconds of the movie (0 = whole movie).
                         Results go under <stem>_last<N>s; --start/end-frame and
@@ -207,6 +305,8 @@ def run(video: str,
     --skip-upload       the movie is already on the volume at <stem>/input/<name>
                         (e.g. via `modal volume put marketstreet-data ./clip.mp4 /clip/input/clip.mp4`)
     """
+    if model not in MODELS:
+        raise SystemExit(f"unknown model {model!r}; valid: {MODELS}")
     if variant not in VARIANTS:
         raise SystemExit(f"unknown variant {variant!r}; valid: {VARIANTS}")
     if last_seconds < 0:
@@ -222,10 +322,16 @@ def run(video: str,
         with volume.batch_upload(force=True) as batch:
             batch.put_file(str(src), f"/{movie}/input/{src.name}")
 
-    fetch_weights.remote(variant)
-    out = reconstruct.remote(movie, src.name, variant, start_frame, end_frame, stride,
-                             window_size, overlap_size, reset_every,
-                             conf_percentile, max_points, last_seconds)
+    if model == "lingbot":
+        variant = LINGBOT_NAME
+        fetch_lingbot_weights.remote()
+        out = reconstruct_lingbot.remote(movie, src.name, fps, mode, keyframe_interval,
+                                         conf_percentile, max_points, last_seconds)
+    else:
+        fetch_weights.remote(variant)
+        out = reconstruct.remote(movie, src.name, variant, start_frame, end_frame, stride,
+                                 window_size, overlap_size, reset_every,
+                                 conf_percentile, max_points, last_seconds)
     print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
     print(f"[loger] download: modal run modal_app.py::pull --movie {_out_movie(movie, last_seconds)} "
           f"--variant {variant}",

@@ -19,6 +19,18 @@ onto the volume (first run only), runs upstream `demo_viser.py --skip_viser` on 
 For a very large movie, pre-upload with
 `modal volume put marketstreet-data ./clip.mp4 /clip/input/clip.mp4` and pass `--skip-upload`.
 
+## LingBot-Map instead of LoGeR
+
+```bash
+modal run --detach modal_app.py::run --video ./clip.mp4 --model lingbot --last-seconds 10
+modal run modal_app.py::pull --movie clip_last10s --variant lingbot-map
+```
+
+[LingBot-Map](https://github.com/robbyant/lingbot-map) is a streaming model. It also predicts **camera
+intrinsics**, which `poses.npz` stores (`intrinsics`, `image_size`), so its output can feed a splat trainer.
+Options: `--fps` (frames per second sampled, 0 = every frame; default 10), `--mode streaming|windowed`,
+`--keyframe-interval` (0 = auto). It uses PyTorch attention rather than FlashInfer.
+
 ## Outputs on the volume (`<movie>` = filename stem)
 
 | path | contents |
@@ -34,4 +46,6 @@ For a very large movie, pre-upload with
   on the first image build / run.
 - Upstream is pinned to commit `7685b7a` (`LOGER_SHA` in `modal_app.py`). Its README says it is a
   reimplementation; check the licence before using results commercially.
+- LingBot-Map was smoke-tested on CPU with random weights only (plumbing, not quality). The checkpoint file
+  name `lingbot-map.pt` and the pose convention (follows upstream's viewer) are unverified on real weights.
 - GPU defaults to `A100-40GB`; use `LOGER_GPU=A100-80GB` if you hit OOM.
