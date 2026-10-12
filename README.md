@@ -19,6 +19,19 @@ onto the volume (first run only), runs upstream `demo_viser.py --skip_viser` on 
 For a very large movie, pre-upload with
 `modal volume put marketstreet-data ./clip.mp4 /clip/input/clip.mp4` and pass `--skip-upload`.
 
+## Align to a straight camera path
+
+For a shot where the camera travels in a straight line, rotate the whole result so the path runs along +Z
+and you look straight down it (level, first camera at the origin). Local, numpy only, works on either model's pulled output:
+
+```bash
+python scripts/align_to_path.py outputs/<movie>/lingbot-map      # -> .../lingbot-map/aligned/
+```
+
+It applies one rigid transform to points and cameras (stored as `align_matrix` in `poses.npz`). It does not straighten
+wobble; it prints the RMS wobble and warns if the cameras aren't looking along the path. "Level" assumes the camera
+was held roughly level on average.
+
 ## LingBot-Map instead of LoGeR
 
 ```bash
