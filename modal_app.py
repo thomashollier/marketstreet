@@ -152,7 +152,7 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
 
     out_movie = _out_movie(movie, last_seconds)
     if last_seconds > 0:
-        tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
+        tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}_{variant}.mp4")
         _trim_tail(video, tail, last_seconds)
         video = tail
 
@@ -249,7 +249,7 @@ def reconstruct_lingbot(movie: str, video_name: str, fps: float = 10.0,
 
     out_movie = _out_movie(movie, last_seconds)
     if last_seconds > 0:
-        tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
+        tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}_{LINGBOT_NAME}.mp4")
         _trim_tail(video, tail, last_seconds)
         video = tail
 
