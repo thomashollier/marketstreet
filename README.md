@@ -35,15 +35,17 @@ running along -Z); that goes to `aligned_tumbled/` so the plain aligned result i
 
 ## Compare two results side by side
 
-One Open3D window, two viewports, one shared camera, so orbit / pan / zoom in either half moves both identically.
-Each cloud is normalised (first camera at the origin, camera path length 1) because the models' scales differ.
+Two Open3D windows, one per process (own GL context each), kept on an identical camera over a pipe: orbit / pan / zoom in
+either window moves both, and `R` / `P` / `+` `-` are synced too. Each cloud is normalised (first camera at the origin, camera
+path length 1) because the models' scales differ. Closing either window closes both.
 
 ```bash
 python scripts/compare_view.py outputs/<movie>/LoGeR_star/aligned_tumbled outputs/<movie>/lingbot-map/aligned_tumbled
 ```
 
 Left-drag orbit, right-drag or ctrl+left-drag pan, wheel zoom; `R` reset, `P` toggle the red camera path, `+`/`-` point size.
-`--max-points` (default 1,000,000 per cloud) subsamples if it is slow. The camera logic is tested; the window itself is not.
+Options: `--max-points` (default 1,000,000 per cloud), `--width/--height` per window, `--no-downsample` (draw every point
+while interacting). The camera logic and the sync protocol are tested with stand-in windows; real rendering is not.
 
 ## LingBot-Map instead of LoGeR
 
