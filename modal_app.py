@@ -84,14 +84,23 @@ def fetch_weights(variant: str) -> str:
     return str(dest)
 
 
+def _out_movie(movie: str, last_seconds: float) -> str:
+    """Volume namespace for results. A tail clip gets its own so runs with
+    different --last-seconds don't overwrite each other."""
+    return f"{movie}_last{last_seconds:g}s" if last_seconds > 0 else movie
+
+
 @app.function(image=loger_image, gpu=GPU, memory=32768,
               volumes={WORK: volume}, timeout=6 * 3600)
 def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
                 start_frame: int = 0, end_frame: int = -1, stride: int = 1,
                 window_size: int = 32, overlap_size: int = 3,
                 reset_every: int = 0, conf_percentile: float = 20.0,
-                max_points: int = 2_000_000) -> str:
-    """Run upstream demo_viser.py headless (--skip_viser), then export poses + PLY."""
+                max_points: int = 2_000_000, last_seconds: float = 0.0) -> str:
+    """Run upstream demo_viser.py headless (--skip_viser), then export poses + PLY.
+
+    last_seconds > 0: first cut the last N seconds of the movie to an H.264 mp4
+    (ffmpeg) and reconstruct that; results land under <movie>_last<N>s."""
     import subprocess
 
     volume.reload()   # pick up the upload / weights committed by other containers
@@ -101,10 +110,21 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
         if not p.exists():
             raise FileNotFoundError(f"{p} not on volume")
 
-    out = pathlib.Path(WORK, movie, variant)
+    out_movie = _out_movie(movie, last_seconds)
+    if last_seconds > 0:
+        tail = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
+        tail.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-sseof", f"-{last_seconds:g}",
+             "-i", str(video), "-an", "-c:v", "libx264", "-crf", "14",
+             "-pix_fmt", "yuv420p", str(tail)],
+            check=True)
+        video = tail
+
+    out = pathlib.Path(WORK, out_movie, variant)
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
-    seq = movie
+    seq = out_movie
     # demo_viser.py names its output f"{seq_name}_{start}_{end}_{stride}.pt"
     pred = raw / f"{seq}_{start_frame}_{end_frame}_{stride}.pt"
 
@@ -170,8 +190,13 @@ def run(video: str,
          reset_every: int = 0,
          conf_percentile: float = 20.0,
          max_points: int = 2_000_000,
+         last_seconds: float = 0.0,
          skip_upload: bool = False):
     """Upload the movie to the volume, fetch weights if needed, reconstruct.
+
+    --last-seconds      use only the last N seconds of the movie (0 = whole movie).
+                        Results go under <stem>_last<N>s; --start/end-frame and
+                        --stride then count within that tail clip.
 
     --variant           LoGeR or LoGeR_star (upstream's demo runs both; _star is the SE(3) variant)
     --start/end-frame   source-frame range, end -1 = last
@@ -184,6 +209,8 @@ def run(video: str,
     """
     if variant not in VARIANTS:
         raise SystemExit(f"unknown variant {variant!r}; valid: {VARIANTS}")
+    if last_seconds < 0:
+        raise SystemExit("--last-seconds must be >= 0")
     src = pathlib.Path(video)
     movie = src.stem
 
@@ -198,9 +225,10 @@ def run(video: str,
     fetch_weights.remote(variant)
     out = reconstruct.remote(movie, src.name, variant, start_frame, end_frame, stride,
                              window_size, overlap_size, reset_every,
-                             conf_percentile, max_points)
+                             conf_percentile, max_points, last_seconds)
     print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
-    print(f"[loger] download: modal run modal_app.py::pull --movie {movie} --variant {variant}",
+    print(f"[loger] download: modal run modal_app.py::pull --movie {_out_movie(movie, last_seconds)} "
+          f"--variant {variant}",
           flush=True)
 
 

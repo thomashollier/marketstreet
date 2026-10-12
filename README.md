@@ -15,7 +15,7 @@ modal run modal_app.py::pull --movie clip # -> ./outputs/clip/LoGeR_star/{points
 `run` uploads the movie to the `marketstreet-data` volume, downloads the checkpoint from Hugging Face
 onto the volume (first run only), runs upstream `demo_viser.py --skip_viser` on an A100, then exports
 `poses.npz` and `points.ply`. Useful flags: `--variant LoGeR|LoGeR_star`, `--stride`, `--start-frame`,
-`--end-frame`, `--window-size`, `--overlap-size`, `--reset-every` (clips >1k frames).
+`--end-frame`, `--last-seconds N` (only the last N seconds; results go under `<stem>_last<N>s`), `--window-size`, `--overlap-size`, `--reset-every` (clips >1k frames).
 For a very large movie, pre-upload with
 `modal volume put marketstreet-data ./clip.mp4 /clip/input/clip.mp4` and pass `--skip-upload`.
 
