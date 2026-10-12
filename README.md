@@ -19,6 +19,26 @@ onto the volume (first run only), runs upstream `demo_viser.py --skip_viser` on 
 For a very large movie, pre-upload with
 `modal volume put marketstreet-data ./clip.mp4 /clip/input/clip.mp4` and pass `--skip-upload`.
 
+## Keep the best observation of each surface (LoGeR)
+
+Every pixel of every frame is a candidate surface point. `fuse` scores them (model confidence, depth, viewing angle), drops
+flying pixels / grazing views / the farthest few percent per frame, then works nearest-first: a farther observation is dropped if a
+better, nearer one already sits within its uncertainty (`--rel-err`, fraction of depth), so a distant view is replaced by the later
+close-up but kept where nothing better exists. Surfaces seen by fewer than `--min-frames` distinct frames are dropped, which also
+removes moving people and cars (they are in a new world position every frame). Camera poses are left untouched. CPU only, runs on
+the saved raw predictions of a finished run:
+
+```bash
+modal run modal_app.py::fuse --movie <movie>                              # -> <movie>/LoGeR_star/fused/
+modal run modal_app.py::pull --movie <movie> --variant LoGeR_star/fused
+python scripts/align_to_path.py outputs/<movie>/LoGeR_star/fused --tumble
+python scripts/compare_view.py outputs/<movie>/LoGeR_star/aligned_tumbled outputs/<movie>/LoGeR_star/fused/aligned_tumbled
+```
+
+Use the same `--start-frame/--end-frame/--stride` as the original run. `fusion_stats.json` lists the settings and per-frame candidate
+counts. Validated on a synthetic street with distance-growing, per-frame depth errors, outliers and a moving object (median error
+0.027 vs 0.072 for a naive merge, floaters 0% vs 3%); defaults are not yet tuned on real footage.
+
 ## Align to a straight camera path
 
 For a shot where the camera travels in a straight line, rotate the whole result so the path runs along +Z
