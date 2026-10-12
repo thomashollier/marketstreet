@@ -129,6 +129,12 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
 
     if not pred.exists():
         raise FileNotFoundError(f"expected predictions at {pred}; got {sorted(raw.iterdir())}")
+    _export(pred, out, start_frame, stride, conf_percentile, max_points)
+    return str(out)
+
+
+def _export(pred, out, start_frame, stride, conf_percentile, max_points):
+    import subprocess
     subprocess.run(
         ["python", "/app/scripts/export_loger.py",
          "--pred", str(pred), "--out", str(out),
@@ -136,6 +142,19 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
          "--conf-percentile", str(conf_percentile), "--max-points", str(max_points)],
         check=True)
     volume.commit()
+
+
+@app.function(image=loger_image, memory=32768, volumes={WORK: volume}, timeout=1800)
+def export_only(movie: str, variant: str = "LoGeR_star", start_frame: int = 0,
+                end_frame: int = -1, stride: int = 1, conf_percentile: float = 20.0,
+                max_points: int = 2_000_000) -> str:
+    """Re-run just the poses/PLY export from saved raw predictions (CPU, no inference)."""
+    volume.reload()
+    out = pathlib.Path(WORK, movie, variant)
+    pred = out / "raw" / f"{movie}_{start_frame}_{end_frame}_{stride}.pt"
+    if not pred.exists():
+        raise FileNotFoundError(f"{pred} not on volume; run the full reconstruct first")
+    _export(pred, out, start_frame, stride, conf_percentile, max_points)
     return str(out)
 
 
@@ -183,6 +202,18 @@ def run(video: str,
     print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
     print(f"[loger] download: modal run modal_app.py::pull --movie {movie} --variant {variant}",
           flush=True)
+
+
+@app.local_entrypoint()
+def export(movie: str, variant: str = "LoGeR_star", start_frame: int = 0,
+           end_frame: int = -1, stride: int = 1, conf_percentile: float = 20.0,
+           max_points: int = 2_000_000):
+    """Re-export poses.npz + points.ply from saved raw predictions, no GPU.
+    Use the same --start-frame/--end-frame/--stride as the original run.
+    Handy for changing --conf-percentile / --max-points."""
+    out = export_only.remote(movie, variant, start_frame, end_frame, stride,
+                             conf_percentile, max_points)
+    print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
 
 
 @app.local_entrypoint()

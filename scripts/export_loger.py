@@ -46,7 +46,11 @@ def main():
     d = torch.load(a.pred, map_location="cpu", weights_only=False)
     pts, conf = d["points"].numpy(), d["conf"].numpy()
     imgs, poses = d["images"].numpy(), d["camera_poses"].numpy()
+    if conf.ndim == pts.ndim:   # saved as [N,H,W,1]
+        conf = conf[..., 0]
     n = len(poses)
+    print(f"[export] shapes: points{pts.shape} conf{conf.shape} "
+          f"images{imgs.shape} poses{poses.shape}", flush=True)
 
     np.savez(out / "poses.npz",
              poses=poses.astype(np.float32),
