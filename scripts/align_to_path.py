@@ -10,8 +10,11 @@ centres, and applies ONE rigid transform to the points and the cameras:
 Cameras are OpenCV convention (x right, y down, z forward), so after alignment
 an average camera has an identity rotation: you look straight down +Z.
 
+--tumble then rotates the whole result 180 deg about the horizontal X axis
+(y -> -y, z -> -z): Y-up like most 3D viewers, path and cameras running along -Z.
+
 It does not straighten the path: wobble around the line is kept (and reported).
-Writes <dir>/aligned/{points.ply,poses.npz,trajectory.txt}; poses.npz keeps all
+Writes <dir>/aligned[_tumbled]/{points.ply,poses.npz,trajectory.txt}; poses.npz keeps all
 original arrays and gains `align_matrix` (4x4, original world -> aligned world).
 """
 import argparse
@@ -93,16 +96,20 @@ def alignment(poses):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", help="folder with points.ply and poses.npz")
-    ap.add_argument("--out", help="default: <dir>/aligned")
+    ap.add_argument("--tumble", action="store_true",
+                    help="after aligning, rotate 180 deg about the horizontal X axis")
+    ap.add_argument("--out", help="default: <dir>/aligned, or aligned_tumbled with --tumble")
     a = ap.parse_args()
 
     src = pathlib.Path(a.dir)
-    out = pathlib.Path(a.out) if a.out else src / "aligned"
+    out = pathlib.Path(a.out) if a.out else src / ("aligned_tumbled" if a.tumble else "aligned")
     out.mkdir(parents=True, exist_ok=True)
 
     z = np.load(src / "poses.npz")
     poses = z["poses"].astype(np.float64)
     A, info = alignment(poses)
+    if a.tumble:
+        A = np.diag([1.0, -1.0, -1.0, 1.0]) @ A           # 180 deg about X, det = +1
     new_poses = A @ poses
 
     xyz, rgb = read_ply(src / "points.ply")

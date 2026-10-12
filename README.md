@@ -30,7 +30,8 @@ python scripts/align_to_path.py outputs/<movie>/lingbot-map      # -> .../lingbo
 
 It applies one rigid transform to points and cameras (stored as `align_matrix` in `poses.npz`). It does not straighten
 wobble; it prints the RMS wobble and warns if the cameras aren't looking along the path. "Level" assumes the camera
-was held roughly level on average.
+was held roughly level on average. Add `--tumble` to also rotate 180 deg about the horizontal X axis (Y-up, path
+running along -Z); that goes to `aligned_tumbled/` so the plain aligned result is kept.
 
 ## LingBot-Map instead of LoGeR
 
