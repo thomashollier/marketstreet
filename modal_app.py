@@ -89,7 +89,9 @@ lingbot_image = (
     .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0")
     .pip_install("torch==2.8.0", "torchvision==0.23.0",
                  index_url="https://download.pytorch.org/whl/cu128")
-    .pip_install("numpy<2")
+    # upstream is tested with numpy<2; unpinned, lingbot-map's `opencv-python`
+    # resolves to 5.x and drags numpy up to 2.2 (seen in the first build log).
+    .pip_install("numpy<2", "opencv-python<4.12")
     .run_commands(
         f"git clone {LINGBOT_REPO} /opt/lingbot-map",
         f"git -C /opt/lingbot-map checkout {LINGBOT_SHA}",
