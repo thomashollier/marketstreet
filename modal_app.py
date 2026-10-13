@@ -266,7 +266,7 @@ def reconstruct_lingbot(movie: str, video_name: str, fps: float = 10.0,
     return str(out)
 
 
-@app.function(image=loger_image, cpu=8.0, memory=65536, volumes={WORK: volume}, timeout=3600)
+@app.function(image=loger_image, cpu=8.0, memory=98304, volumes={WORK: volume}, timeout=7200)
 def fuse_best(movie: str, variant: str = "LoGeR_star", start_frame: int = 0, end_frame: int = -1,
               stride: int = 1, extra: list = None) -> str:
     """Best-observation fusion of a finished LoGeR run's raw predictions (CPU only, no model).
@@ -372,15 +372,16 @@ def export(movie: str, variant: str = "LoGeR_star", start_frame: int = 0,
 @app.local_entrypoint()
 def fuse(movie: str, variant: str = "LoGeR_star", start_frame: int = 0, end_frame: int = -1,
          stride: int = 1, voxel: float = 0.0, rel_err: float = 0.03, tier: float = 0.5,
-         min_frames: int = 2, pixel_stride: int = 2, conf_pct: float = 20.0, far_pct: float = 98.0,
-         max_points: int = 2_000_000):
+         min_frames: int = 2, pixel_stride: int = 1, conf_pct: float = 20.0, far_pct: float = 98.0,
+         rtol: float = 0.03, min_cos: float = 0.01, max_points: int = 4_000_000):
     """Keep the best observation of each surface from a finished LoGeR run (no GPU, no re-run of the model).
-    Use the same --start-frame/--end-frame/--stride as the original run. Knobs (details in scripts/fuse_best.py):
-    --voxel (0 = auto), --rel-err (how far a nearer point suppresses a farther one; 0 = off), --min-frames
-    (drop surfaces seen by fewer frames: this removes moving people/cars), --pixel-stride, --conf-pct, --far-pct."""
+    Use the same --start-frame/--end-frame/--stride as the original run. It prints what each stage removed.
+    Too few points? --min-frames 1 (also keeps moving objects), --voxel (smaller = denser but stricter on support),
+    --conf-pct 10, --rtol 0.1 (fewer flying-pixel drops). Too noisy? --min-frames 3, --rel-err 0.05.
+    More in scripts/fuse_best.py."""
     extra = ["--voxel", voxel, "--rel-err", rel_err, "--tier", tier, "--min-frames", min_frames,
              "--pixel-stride", pixel_stride, "--conf-pct", conf_pct, "--far-pct", far_pct,
-             "--max-points", max_points]
+             "--rtol", rtol, "--min-cos", min_cos, "--max-points", max_points]
     out = fuse_best.remote(movie, variant, start_frame, end_frame, stride, [str(x) for x in extra])
     print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
     print(f"[loger] download: modal run modal_app.py::pull --movie {movie} --variant {variant}/fused", flush=True)

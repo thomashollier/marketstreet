@@ -35,9 +35,14 @@ python scripts/align_to_path.py outputs/<movie>/LoGeR_star/fused --tumble
 python scripts/compare_view.py outputs/<movie>/LoGeR_star/aligned_tumbled outputs/<movie>/LoGeR_star/fused/aligned_tumbled
 ```
 
-Use the same `--start-frame/--end-frame/--stride` as the original run. `fusion_stats.json` lists the settings and per-frame candidate
-counts. Validated on a synthetic street with distance-growing, per-frame depth errors, outliers and a moving object (median error
-0.027 vs 0.072 for a naive merge, floaters 0% vs 3%); defaults are not yet tuned on real footage.
+Use the same `--start-frame/--end-frame/--stride` as the original run. It prints (and saves in `fusion_stats.json`) how many
+pixels each stage removed, so you can see what is thinning the cloud. The flying-pixel test allows for how fast depth changes on a
+flat surface at that tilt (so the distant road and building faces survive); grazing views are down-weighted, not deleted.
+
+Dials: more points = `--min-frames 1` (also keeps moving objects), `--conf-pct 10`, `--rtol 0.1`; cleaner = `--min-frames 3`,
+`--rel-err 0.05`. On a synthetic street with distance-growing depth errors and a moving object, defaults give median error 0.039
+vs 0.072 for a naive merge, bad points 2% vs 14%, floaters 0.05% vs 3%, similar coverage; `--min-frames 3` halves the points and
+cuts bad points to 0.5%. Not yet tuned on real footage.
 
 ## Align to a straight camera path
 

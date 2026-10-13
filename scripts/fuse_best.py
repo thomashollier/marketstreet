@@ -33,40 +33,63 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 
-def frame_candidates(P, conf, rgb, C, fwd, a):
-    """Quality-filtered, weighted candidate points of one frame. P [H,W,3], conf [H,W], rgb [H,W,3] 0..1."""
-    v = C - P
-    r = np.linalg.norm(v, axis=-1)
-    z = ((P - C) * fwd).sum(-1)                                  # depth along the camera's forward axis
-    n = np.cross(np.gradient(P, axis=1), np.gradient(P, axis=0))
-    cos = np.abs((n * v).sum(-1)) / (np.linalg.norm(n, axis=-1) * r + 1e-12)
+def _tilt_allowance(rn, r, cos, sl_a, sl_b):
+    """Relative range change between two neighbouring pixels that a FLAT surface at this tilt would produce
+    (about pixel angle * cot(grazing angle)); anything beyond it is a real depth discontinuity."""
+    cross = np.linalg.norm(np.cross(rn[sl_a], rn[sl_b]), axis=-1)
+    step = np.arctan2(cross, (rn[sl_a] * rn[sl_b]).sum(-1))       # angle between the two pixel rays
+    c = np.minimum(cos[sl_a], cos[sl_b])
+    return np.abs(r[sl_a] - r[sl_b]) / np.minimum(r[sl_a], r[sl_b]), step * np.sqrt(np.maximum(1 - c ** 2, 0)) / np.maximum(c, 0.05)
 
-    ok = np.isfinite(P).all(-1) & np.isfinite(conf) & (z > 0)
-    zs = np.where(ok, z, np.nan)
-    edge = np.zeros_like(ok)                                     # depth discontinuities: flying pixels
+
+def frame_candidates(P, conf, rgb, C, fwd, a, stats):
+    """Quality-filtered, weighted candidate points of one frame. P [H,W,3], conf [H,W], rgb [H,W,3] 0..1.
+    `stats` accumulates how many pixels each filter removed."""
+    ray = P - C
+    r = np.linalg.norm(ray, axis=-1)
+    z = (ray * fwd).sum(-1)                                      # depth along the camera's forward axis
+    n = np.cross(np.gradient(P, axis=1), np.gradient(P, axis=0))
+    cos = np.abs((n * ray).sum(-1)) / (np.linalg.norm(n, axis=-1) * r + 1e-12)
+
+    valid = np.isfinite(P).all(-1) & np.isfinite(conf) & (z > 0)
+    stats["pixels"] += valid.size
+    stats["invalid"] += int((~valid).sum())
+    rn = ray / np.maximum(r[..., None], 1e-12)
+    rs = np.where(valid, r, np.nan)
+    edge = np.zeros_like(valid)                                  # flying pixels at depth discontinuities
     with np.errstate(invalid="ignore"):
-        jump_v = np.abs(zs[1:] - zs[:-1]) / np.minimum(zs[1:], zs[:-1]) > a["rtol"]
-        jump_h = np.abs(zs[:, 1:] - zs[:, :-1]) / np.minimum(zs[:, 1:], zs[:, :-1]) > a["rtol"]
-    edge[1:] |= jump_v
-    edge[:-1] |= jump_v
-    edge[:, 1:] |= jump_h
-    edge[:, :-1] |= jump_h
-    ok &= ~edge & (cos >= a["min_cos"])
+        for sl_a, sl_b in (((slice(1, None), slice(None)), (slice(None, -1), slice(None))),
+                           ((slice(None), slice(1, None)), (slice(None), slice(None, -1)))):
+            rel, allow = _tilt_allowance(rn, rs, cos, sl_a, sl_b)
+            hit = rel > a["rtol"] + 2.0 * allow
+            edge[sl_a] |= hit
+            edge[sl_b] |= hit
+    ok = valid & ~edge
+    stats["flying_pixels"] += int(valid.sum() - ok.sum())
+    before = int(ok.sum())
+    ok &= cos >= a["min_cos"]
+    stats["grazing"] += before - int(ok.sum())
     if not ok.any():
         return None
+    before = int(ok.sum())
     ok &= conf >= np.percentile(conf[ok], a["conf_pct"])
+    stats["low_confidence"] += before - int(ok.sum())
+    before = int(ok.sum())
     ok &= z <= np.percentile(z[ok], a["far_pct"])
+    stats["far"] += before - int(ok.sum())
 
     s = a["pixel_stride"]
     sub = np.zeros_like(ok)
     sub[::s, ::s] = True
+    before = int(ok.sum())
     ok &= sub
+    stats["stride_decimation"] += before - int(ok.sum())
     w = np.clip(conf, 0.05, 1.0) * np.maximum(z, 1e-9) ** (-a["p"]) * np.maximum(cos, 1e-3) ** 2
-    return P[ok], rgb[ok], w[ok], z[ok], int(ok.sum())
+    return P[ok], np.clip(rgb[ok] * 255, 0, 255).astype(np.uint8), w[ok], z[ok], int(ok.sum())
 
 
-def fuse(xyz, rgb, w, frame, voxel, tier=0.5, min_frames=2):
-    """Voxel-wise best-tier fusion. Returns (xyz, rgb) of the surviving, averaged points."""
+def fuse(xyz, rgb, w, frame, voxel, tier=0.5, min_frames=2, stats=None):
+    """Voxel-wise best-tier fusion. Returns (xyz, rgb 0..255) of the surviving, averaged points."""
     ijk = np.floor(xyz / voxel).astype(np.int64)
     ijk -= ijk.min(0)
     dims = ijk.max(0) + 2
@@ -88,7 +111,12 @@ def fuse(xyz, rgb, w, frame, voxel, tier=0.5, min_frames=2):
     starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
     vid = np.repeat(np.arange(len(starts)), np.diff(np.r_[starts, len(ks)]))
     wmax = np.maximum.reduceat(ws, starts)
-    keep = (ws >= tier * wmax[vid]) & (support[o] >= min_frames)
+    supported = support[o] >= min_frames
+    best = ws >= tier * wmax[vid]
+    if stats is not None:
+        stats["seen_by_too_few_frames"] = stats.get("seen_by_too_few_frames", 0) + int((~supported).sum())
+        stats["weaker_than_best_tier"] = stats.get("weaker_than_best_tier", 0) + int((supported & ~best).sum())
+    keep = best & supported
     wk = ws * keep
     sw = np.add.reduceat(wk, starts)
     good = sw > 0
@@ -97,7 +125,7 @@ def fuse(xyz, rgb, w, frame, voxel, tier=0.5, min_frames=2):
     return out_xyz.astype(np.float32), out_rgb.astype(np.float32)
 
 
-def fuse_nearest_first(xyz, rgb, w, frame, z, voxel, rel_err, tier=0.5, min_frames=2):
+def fuse_nearest_first(xyz, rgb, w, frame, z, voxel, rel_err, tier=0.5, min_frames=2, stats=None):
     """Nearest-first fusion in depth octaves. Each octave is fused at the fine `voxel` size, but first any
     observation lying within rel_err * its depth of an already accepted (nearer, better) point is dropped."""
     from scipy.spatial import cKDTree
@@ -107,12 +135,34 @@ def fuse_nearest_first(xyz, rgb, w, frame, z, voxel, rel_err, tier=0.5, min_fram
         sel = np.flatnonzero(octave == k)
         if acc_x:
             d, _ = cKDTree(np.concatenate(acc_x)).query(xyz[sel], workers=-1)
-            sel = sel[d >= rel_err * z[sel]]
+            keep = d >= rel_err * z[sel]
+            if stats is not None:
+                stats["replaced_by_nearer_view"] = stats.get("replaced_by_nearer_view", 0) + int((~keep).sum())
+            sel = sel[keep]
         if len(sel):
-            fx, fc = fuse(xyz[sel], rgb[sel], w[sel], frame[sel], voxel, tier, min_frames)
+            fx, fc = fuse(xyz[sel], rgb[sel], w[sel], frame[sel], voxel, tier, min_frames, stats)
             acc_x.append(fx)
             acc_c.append(fc)
     return np.concatenate(acc_x), np.concatenate(acc_c)
+
+
+def report(st, n_candidates, n_fused, n_written, cap):
+    """Human-readable account of what each stage removed (pixel / observation counts)."""
+    px = st["pixels"]
+    lines = [f"[fuse] {px:,} input pixels"]
+    for key, label in (("invalid", "invalid / behind camera"), ("flying_pixels", "flying pixels (depth discontinuity)"),
+                       ("grazing", "near-grazing views"), ("low_confidence", "lowest-confidence per frame"),
+                       ("far", "farthest per frame"), ("stride_decimation", "skipped by --pixel-stride (not a filter)")):
+        lines.append(f"[fuse]   - {st[key]:>12,} ({100 * st[key] / px:5.1f}%) {label}")
+    lines.append(f"[fuse] = {n_candidates:,} candidate observations")
+    for key, label in (("replaced_by_nearer_view", "replaced by a nearer, better view (--rel-err)"),
+                       ("seen_by_too_few_frames", "surfaces seen by too few frames (--min-frames; moving objects)"),
+                       ("weaker_than_best_tier", "merged away: weaker than the best view of the same voxel (--tier)")):
+        v = st.get(key, 0)
+        lines.append(f"[fuse]   - {v:>12,} ({100 * v / max(n_candidates, 1):5.1f}%) {label}")
+    lines.append(f"[fuse] = {n_fused:,} fused surface points" + (f"  -> CAPPED to {n_written:,} by --max-points {cap:,} "
+                 "(random thinning: raise --max-points)" if n_written < n_fused else ""))
+    return "\n".join(lines)
 
 
 def main():
@@ -131,10 +181,14 @@ def main():
     ap.add_argument("--p", type=float, default=2.0, help="depth exponent: weight ~ depth^-p")
     ap.add_argument("--conf-pct", type=float, default=20.0, help="drop each frame's lowest N%% confidence")
     ap.add_argument("--far-pct", type=float, default=98.0, help="drop each frame's farthest (100-N)%%")
-    ap.add_argument("--rtol", type=float, default=0.05, help="relative depth jump between neighbours = flying pixel")
-    ap.add_argument("--min-cos", type=float, default=0.05, help="drop near-grazing views below this cos(angle)")
-    ap.add_argument("--pixel-stride", type=int, default=2, help="use every Nth pixel in each direction")
-    ap.add_argument("--max-points", type=int, default=2_000_000)
+    ap.add_argument("--rtol", type=float, default=0.03,
+                    help="relative depth jump between neighbouring pixels tolerated ON TOP of what a flat surface at "
+                         "that tilt gives (bigger = fewer pixels dropped as flying pixels)")
+    ap.add_argument("--min-cos", type=float, default=0.01,
+                    help="only drop views closer to edge-on than this cos(angle) (about 0.6 deg); grazing views are otherwise "
+                         "kept and just weighted down")
+    ap.add_argument("--pixel-stride", type=int, default=1, help="use every Nth pixel in each direction")
+    ap.add_argument("--max-points", type=int, default=4_000_000)
     a = ap.parse_args()
     args = vars(a)
 
@@ -148,37 +202,41 @@ def main():
     voxel = a.voxel or 0.002 * float(np.linalg.norm(np.diff(C, axis=0), axis=1).sum())
     print(f"[fuse] {n} frames, voxel {voxel:.5f}", flush=True)
 
+    st = dict.fromkeys(("pixels", "invalid", "flying_pixels", "grazing", "low_confidence", "far", "stride_decimation"), 0)
     X, R, W, Z, F, kept = [], [], [], [], [], []
     for i in range(n):
-        res = frame_candidates(P[i], conf[i], img[i], C[i], poses[i, :3, 2], args)
+        res = frame_candidates(P[i], conf[i], img[i], C[i], poses[i, :3, 2], args, st)
         if res is None:
             kept.append(0)
             continue
         x, c, w, zz, k = res
         X.append(x), R.append(c), W.append(w), Z.append(zz), F.append(np.full(len(x), i, np.int32)), kept.append(k)
     xyz, rgb, w, z, frame = (np.concatenate(v) for v in (X, R, W, Z, F))
-    print(f"[fuse] {len(xyz):,} candidate points after per-frame filters", flush=True)
+    del P, conf, img, X, R, W, Z, F
+    print(f"[fuse] {len(xyz):,} candidate observations after per-frame filters", flush=True)
 
     if a.rel_err > 0:
-        fx, fc = fuse_nearest_first(xyz, rgb, w, frame, z, voxel, a.rel_err, a.tier, a.min_frames)
+        fx, fc = fuse_nearest_first(xyz, rgb, w, frame, z, voxel, a.rel_err, a.tier, a.min_frames, st)
     else:
-        fx, fc = fuse(xyz, rgb, w, frame, voxel, a.tier, a.min_frames)
-    n_fused = len(fx)
+        fx, fc = fuse(xyz, rgb, w, frame, voxel, a.tier, a.min_frames, st)
+    n_cand, n_fused = len(xyz), len(fx)
     if n_fused > a.max_points:
         idx = np.random.default_rng(0).choice(n_fused, a.max_points, replace=False)
         fx, fc = fx[idx], fc[idx]
+    text = report(st, n_cand, n_fused, len(fx), a.max_points)
+    print(text, flush=True)
 
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    write_ply(out / "points.ply", fx, (fc.clip(0, 1) * 255).astype(np.uint8))
+    write_ply(out / "points.ply", fx, fc.clip(0, 255).astype(np.uint8))
     sib = pathlib.Path(a.pred).parent.parent / "poses.npz"
     fidx = np.load(sib)["frame_idx"] if sib.exists() else np.arange(n)
     np.savez(out / "poses.npz", poses=poses.astype(np.float32), frame_idx=fidx)
-    stats = {"frames": n, "voxel": voxel, "candidates": int(len(xyz)), "fused_voxels": int(n_fused),
-             "written": int(len(fx)), "params": {k: v for k, v in args.items() if k not in ("pred", "out")},
-             "per_frame_candidates": kept}
+    stats = {"frames": n, "voxel": voxel, "candidates": int(n_cand), "fused_points": int(n_fused),
+             "written": int(len(fx)), "stages": {k: int(v) for k, v in st.items()},
+             "params": {k: v for k, v in args.items() if k not in ("pred", "out")}, "per_frame_candidates": kept}
     (out / "fusion_stats.json").write_text(json.dumps(stats, indent=1))
-    print(f"[fuse] {len(xyz):,} candidates -> {n_fused:,} fused points ({len(fx):,} written) -> {out}", flush=True)
+    print(f"[fuse] wrote {len(fx):,} points -> {out}", flush=True)
 
 
 if __name__ == "__main__":
