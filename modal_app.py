@@ -269,6 +269,53 @@ def reconstruct_lingbot(movie: str, video_name: str, fps: float = 10.0,
     return str(out)
 
 
+@app.function(image=loger_image, volumes={WORK: volume}, timeout=4 * 3600)
+def fetch_movie(url: str, movie: str, samples: int = 8) -> str:
+    """Download a movie from a URL straight onto the volume as <movie>/input/<movie><ext>,
+    then save `samples` evenly spaced full-resolution frames to <movie>/samples/ for a look."""
+    import shutil, subprocess, urllib.request
+    ext = pathlib.Path(url.split("?")[0]).suffix or ".mp4"
+    dest = pathlib.Path(WORK, movie, "input", f"{movie}{ext}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        with urllib.request.urlopen(url) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f, length=16 << 20)
+        tmp.rename(dest)
+        volume.commit()
+    print(f"[fetch] {dest} ({dest.stat().st_size / 1e9:.2f} GB)", flush=True)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
+                            "-show_entries", "stream=width,height,r_frame_rate,nb_read_packets,codec_name",
+                            "-of", "default=nw=1", str(dest)], capture_output=True, text=True).stdout
+    print(probe, flush=True)
+    n = int(next(l.split("=")[1] for l in probe.splitlines() if l.startswith("nb_read_packets")))
+    sd = pathlib.Path(WORK, movie, "samples")
+    sd.mkdir(exist_ok=True)
+    for k in range(samples):
+        i = int((k + 0.5) * n / samples)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(dest), "-vf", f"select=eq(n\\,{i})",
+                        "-frames:v", "1", str(sd / f"frame_{i:06d}.png")], check=True)
+    volume.commit()
+    return str(dest)
+
+
+@app.function(image=loger_image, cpu=8.0, memory=65536, volumes={WORK: volume}, timeout=6 * 3600)
+def register_scan(movie: str, video_name: str, out_movie: str, extra: list = None) -> str:
+    """Gate-register a full-width film scan (scripts/register_gate.py): drop pulldown duplicates, line each
+    frame up on the frame lines / gate edges, crop a fixed picture area. Writes <out_movie>/input/<out_movie>.mp4
+    (+ .npz of offsets, _median.png) so it can be run with --video <out_movie>.mp4 --skip-upload."""
+    import subprocess
+    volume.reload()
+    src = pathlib.Path(WORK, movie, "input", video_name)
+    if not src.exists():
+        raise FileNotFoundError(f"{src} not on volume")
+    dst = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
+    subprocess.run(["python", "/app/scripts/register_gate.py", "--input", str(src), "--out", str(dst),
+                    *(extra or [])], check=True)
+    volume.commit()
+    return str(dst)
+
+
 @app.function(image=loger_image, cpu=8.0, memory=98304, volumes={WORK: volume}, timeout=7200)
 def fuse_best(movie: str, variant: str = "LoGeR_star", start_frame: int = 0, end_frame: int = -1,
               stride: int = 1, extra: list = None) -> str:
@@ -393,6 +440,32 @@ def fuse(movie: str, variant: str = "LoGeR_star", start_frame: int = 0, end_fram
     out = fuse_best.remote(movie, variant, start_frame, end_frame, stride, [str(x) for x in extra])
     print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
     print(f"[loger] download: modal run modal_app.py::pull --movie {movie} --variant {variant}/fused", flush=True)
+
+
+@app.local_entrypoint()
+def fetch(url: str, movie: str, samples: int = 8):
+    """Download a movie from a URL straight onto the volume (no local copy) as <movie>/input/<movie><ext>,
+    plus a few sample frames in <movie>/samples/. Then run with --video <movie><ext> --skip-upload."""
+    out = fetch_movie.remote(url, movie, samples)
+    print(f"[fetch] done: {VOLUME_NAME}:{out}", flush=True)
+    print(f"[fetch] samples: modal volume get {VOLUME_NAME} {movie}/samples ./outputs/{movie}/", flush=True)
+
+
+@app.local_entrypoint()
+def register(movie: str, video: str, out_movie: str, start_sec: float = 0.0, end_sec: float = -1.0,
+             det_width: int = 1024, out_width: int = 2048, fps: float = 16.0, crop: str = "",
+             analyse_only: bool = False):
+    """Gate-register a full-width scan already on the volume at <movie>/input/<video> (see scripts/register_gate.py).
+    --crop "X0 Y0 X1 Y1" in fractions of the frame. Check <out_movie>/input/<out_movie>_median.png, then
+    modal run modal_app.py::run --video <out_movie>.mp4 --skip-upload ..."""
+    extra = ["--start-sec", start_sec, "--end-sec", end_sec, "--det-width", det_width,
+             "--out-width", out_width, "--fps", fps]
+    if crop:
+        extra += ["--crop", *crop.split()]
+    if analyse_only:
+        extra += ["--analyse-only"]
+    out = register_scan.remote(movie, video, out_movie, [str(x) for x in extra])
+    print(f"[gate] done: {VOLUME_NAME}:{out}", flush=True)
 
 
 @app.local_entrypoint()

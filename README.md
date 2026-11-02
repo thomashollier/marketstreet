@@ -44,6 +44,26 @@ Dials: more points = `--min-frames 1` (also keeps moving objects), `--conf-pct 1
 vs 0.072 for a naive merge, bad points 2% vs 14%, floaters 0.05% vs 3%, similar coverage; `--min-frames 3` halves the points and
 cuts bad points to 0.5%. Not yet tuned on real footage.
 
+## Start from the original film scan (gate registration)
+
+A content-based stabiliser moves each frame to cancel shake, which moves the optical centre; a reconstruction model
+reads that as camera rotation and bends the street. Starting from a full-width scan (perforations and frame lines
+visible) avoids it: the frame lines and gate edges are the shadow of the camera's aperture plate, fixed to the lens.
+
+```bash
+modal run --detach modal_app.py::fetch --movie SF_1906_4k \
+    --url https://archive.org/download/MarketStreet19064KScan20181016/Market_Street_1906_4K_scan_20181016.hevc.mp4
+modal run --detach modal_app.py::register --movie SF_1906_4k --video SF_1906_4k.mp4 --out-movie SF_1906_4k_gate \
+    --start-sec 25.5 --end-sec 699
+modal run --detach modal_app.py::run --video SF_1906_4k_gate.mp4 --skip-upload --stride 4
+```
+
+`fetch` downloads straight onto the volume (no local copy) and saves a few sample frames. `register`
+(`scripts/register_gate.py`) drops the 24 fps pulldown duplicates (back to 16 fps), takes the frame-to-frame weave
+from the perforations and the slow perforation-to-gate drift from the frame lines (smoothed over 2 s, so faint frame
+lines can't throw a frame off), x from the gate edges, then cuts one fixed crop inside the picture area (`--crop`,
+fractions of the frame; check `<out-movie>_median.png`). Offsets per frame go in `<out-movie>.npz`.
+
 ## Is the street level? (check for bowing)
 
 ```bash
