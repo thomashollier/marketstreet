@@ -44,6 +44,16 @@ Dials: more points = `--min-frames 1` (also keeps moving objects), `--conf-pct 1
 vs 0.072 for a naive merge, bad points 2% vs 14%, floaters 0.05% vs 3%, similar coverage; `--min-frames 3` halves the points and
 cuts bad points to 0.5%. Not yet tuned on real footage.
 
+## Is the street level? (check for bowing)
+
+```bash
+python scripts/check_level.py outputs/<movie>/LoGeR_star      # also writes level_check.png next to the results
+```
+
+Measures, in a side view along the straight path, how much the camera height and the road surface "sag" compared with the
+straight line joining their two ends, as a % of path length (under 0.5% = level; bowl = middle lower, hill = middle higher), plus
+the change in ground slope from start to end. Tested on synthetic bowls/hills/flat streets; not yet run on real results.
+
 ## Align to a straight camera path
 
 For a shot where the camera travels in a straight line, rotate the whole result so the path runs along +Z
