@@ -316,6 +316,24 @@ def register_scan(movie: str, video_name: str, out_movie: str, extra: list = Non
     return str(dst)
 
 
+@app.function(image=loger_image, cpu=8.0, volumes={WORK: volume}, timeout=4 * 3600)
+def crop_video(movie: str, video_name: str, out_movie: str, x: int, y: int, w: int, h: int,
+               crf: int = 12, proxy_width: int = 256) -> str:
+    """Fixed pixel crop of <movie>/input/<video_name> -> <out_movie>/input/<out_movie>.mp4 (same frames, same fps),
+    plus <out_movie>_proxy.mp4 at proxy_width for quick looks / frame matching."""
+    import subprocess
+    volume.reload()
+    src = pathlib.Path(WORK, movie, "input", video_name)
+    dst = pathlib.Path(WORK, out_movie, "input", f"{out_movie}.mp4")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vf", f"crop={w}:{h}:{x}:{y}",
+                    "-c:v", "libx264", "-crf", str(crf), "-preset", "slow", "-pix_fmt", "yuv420p", str(dst)], check=True)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(dst), "-vf", f"scale={proxy_width}:-2",
+                    "-c:v", "libx264", "-crf", "20", str(dst.with_name(f"{out_movie}_proxy.mp4"))], check=True)
+    volume.commit()
+    return str(dst)
+
+
 @app.function(image=loger_image, cpu=8.0, memory=98304, volumes={WORK: volume}, timeout=7200)
 def fuse_best(movie: str, variant: str = "LoGeR_star", start_frame: int = 0, end_frame: int = -1,
               stride: int = 1, extra: list = None) -> str:
@@ -466,6 +484,13 @@ def register(movie: str, video: str, out_movie: str, start_sec: float = 0.0, end
         extra += ["--analyse-only"]
     out = register_scan.remote(movie, video, out_movie, [str(x) for x in extra])
     print(f"[gate] done: {VOLUME_NAME}:{out}", flush=True)
+
+
+@app.local_entrypoint()
+def crop(movie: str, video: str, out_movie: str, x: int, y: int, w: int, h: int):
+    """Fixed pixel crop of a movie on the volume into a new movie (+ a small proxy), e.g. to trim a registered scan."""
+    out = crop_video.remote(movie, video, out_movie, x, y, w, h)
+    print(f"[crop] done: {VOLUME_NAME}:{out}", flush=True)
 
 
 @app.local_entrypoint()
