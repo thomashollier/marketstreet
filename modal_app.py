@@ -138,8 +138,11 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
                 start_frame: int = 0, end_frame: int = -1, stride: int = 1,
                 window_size: int = 32, overlap_size: int = 3,
                 reset_every: int = 0, conf_percentile: float = 20.0,
-                max_points: int = 2_000_000, last_seconds: float = 0.0) -> str:
+                max_points: int = 2_000_000, last_seconds: float = 0.0, tag: str = "") -> str:
     """Run upstream demo_viser.py headless (--skip_viser), then export poses + PLY.
+
+    tag: results go to <movie>/<variant>_<tag> instead of <movie>/<variant>, so runs with
+    different settings don't overwrite each other.
 
     last_seconds > 0: first cut the last N seconds of the movie to an H.264 mp4
     (ffmpeg) and reconstruct that; results land under <movie>_last<N>s."""
@@ -158,7 +161,7 @@ def reconstruct(movie: str, video_name: str, variant: str = "LoGeR_star",
         _trim_tail(video, tail, last_seconds)
         video = tail
 
-    out = pathlib.Path(WORK, out_movie, variant)
+    out = pathlib.Path(WORK, out_movie, f"{variant}_{tag}" if tag else variant)
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     seq = out_movie
@@ -300,7 +303,8 @@ def run(video: str,
          fps: float = 10.0,
          mode: str = "streaming",
          keyframe_interval: int = 0,
-         skip_upload: bool = False):
+         skip_upload: bool = False,
+         tag: str = ""):
     """Upload the movie to the volume, fetch weights if needed, reconstruct.
 
     --model             loger (default) or lingbot (LingBot-Map). With lingbot, results
@@ -321,6 +325,8 @@ def run(video: str,
     --window-size       frames per LoGeR window; --overlap-size frames shared between windows
     --reset-every       reset TTT state every N windows; use for >1k-frame clips
     --conf-percentile   drop the lowest N% confidence points from points.ply
+    --tag               (loger) write to <movie>/<variant>_<tag>, e.g. --tag s4 for a --stride 4 run,
+                        so runs with different settings sit side by side; pull with --variant <variant>_<tag>
     --skip-upload       the movie is already on the volume at <stem>/input/<name>
                         (e.g. via `modal volume put marketstreet-data ./clip.mp4 /clip/input/clip.mp4`)
     """
@@ -350,7 +356,9 @@ def run(video: str,
         fetch_weights.remote(variant)
         out = reconstruct.remote(movie, src.name, variant, start_frame, end_frame, stride,
                                  window_size, overlap_size, reset_every,
-                                 conf_percentile, max_points, last_seconds)
+                                 conf_percentile, max_points, last_seconds, tag)
+        if tag:
+            variant = f"{variant}_{tag}"
     print(f"[loger] done: {VOLUME_NAME}:{out}", flush=True)
     print(f"[loger] download: modal run modal_app.py::pull --movie {_out_movie(movie, last_seconds)} "
           f"--variant {variant}",
