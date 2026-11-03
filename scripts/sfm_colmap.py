@@ -7,7 +7,8 @@ ride. Here every frame shares one camera (focal length + radial distortion, solv
 many frames (the sequential matcher also pairs each frame with frames 1, 2, 4, 8, ... ahead, so distant buildings
 give long tracks), and bundle adjustment makes all of it agree. Nothing tells it the street is flat.
 
-Steps (each skipped if its output exists, so a run can be resumed):
+Steps (frames, masks and features are skipped if they exist and matching skips matched pairs, so an
+interrupted run resumes):
   1. frames   ffmpeg -> <work>/images/f<frame>.jpg  (frame = index in --video)
   2. masks    torchvision Mask R-CNN: people, vehicles, animals (dilated) -> <work>/masks/<image>.png (0 = ignore)
   3. sfm      SIFT (masked) -> sequential matching -> incremental or global mapping
@@ -89,12 +90,13 @@ def run_sfm(work, images, camera_model, focal_guess, mapper, overlap, max_featur
         pycolmap.extract_features(db, work / "images", camera_mode=pycolmap.CameraMode.SINGLE,
                                   reader_options=ro, extraction_options=eo)
         print(f"[sfm] features: {time.time() - t:.0f}s", flush=True)
-        po = pycolmap.SequentialPairingOptions(overlap=overlap, quadratic_overlap=True)
-        mo = pycolmap.FeatureMatchingOptions()
-        mo.num_threads = threads
-        t = time.time()
-        pycolmap.match_sequential(db, matching_options=mo, pairing_options=po)
-        print(f"[sfm] matching: {time.time() - t:.0f}s", flush=True)
+    # always run: COLMAP skips pairs already in the database, so an interrupted run resumes here
+    po = pycolmap.SequentialPairingOptions(overlap=overlap, quadratic_overlap=True)
+    mo = pycolmap.FeatureMatchingOptions()
+    mo.num_threads = threads
+    t = time.time()
+    pycolmap.match_sequential(db, matching_options=mo, pairing_options=po)
+    print(f"[sfm] matching: {time.time() - t:.0f}s", flush=True)
     sparse = work / "sparse"
     sparse.mkdir(exist_ok=True)
     t = time.time()
