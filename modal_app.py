@@ -100,6 +100,17 @@ lingbot_image = (
     .add_local_dir("scripts", "/app/scripts")
 )
 
+# Structure from motion (scripts/sfm_colmap.py): COLMAP via pycolmap (CPU wheels), Mask R-CNN from torchvision for
+# the moving-object masks. Same pycolmap version as tested locally.
+sfm_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg", "libgl1", "libglib2.0-0")
+    .pip_install("numpy<2", "pycolmap==4.0.3", "torch==2.6.0", "torchvision==0.21.0", "opencv-python-headless<4.12")
+    .run_commands("python -c \"import torchvision; torchvision.models.detection.maskrcnn_resnet50_fpn_v2("
+                  "weights=torchvision.models.detection.MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT)\"")
+    .add_local_dir("scripts", "/app/scripts")
+)
+
 app = modal.App(APP_NAME)
 
 
@@ -334,6 +345,19 @@ def crop_video(movie: str, video_name: str, out_movie: str, x: int, y: int, w: i
     return str(dst)
 
 
+@app.function(image=sfm_image, gpu="T4", cpu=16.0, memory=65536, volumes={WORK: volume}, timeout=12 * 3600)
+def sfm_colmap(movie: str, video_name: str, tag: str, extra: list = None) -> str:
+    """scripts/sfm_colmap.py on <movie>/input/<video_name> -> <movie>/sfm_<tag>/{fixed_lens,free_lens}/."""
+    import subprocess
+    volume.reload()
+    video = pathlib.Path(WORK, movie, "input", video_name)
+    work = pathlib.Path(WORK, movie, f"sfm_{tag}")
+    subprocess.run(["python", "/app/scripts/sfm_colmap.py", "--video", str(video), "--work", str(work),
+                    *(extra or [])], check=True)
+    volume.commit()
+    return str(work)
+
+
 @app.function(image=loger_image, cpu=8.0, memory=98304, volumes={WORK: volume}, timeout=7200)
 def fuse_best(movie: str, variant: str = "LoGeR_star", start_frame: int = 0, end_frame: int = -1,
               stride: int = 1, extra: list = None) -> str:
@@ -491,6 +515,18 @@ def crop(movie: str, video: str, out_movie: str, x: int, y: int, w: int, h: int)
     """Fixed pixel crop of a movie on the volume into a new movie (+ a small proxy), e.g. to trim a registered scan."""
     out = crop_video.remote(movie, video, out_movie, x, y, w, h)
     print(f"[crop] done: {VOLUME_NAME}:{out}", flush=True)
+
+
+@app.local_entrypoint()
+def sfm(movie: str, video: str, tag: str, start: int, end: int, stride: int = 2, mapper: str = "incremental",
+        focal_guess: float = 1.43, camera_model: str = "SIMPLE_RADIAL", no_masks: bool = False):
+    """Structure from motion with one shared camera over frames start..end of a movie on the volume
+    (scripts/sfm_colmap.py). Results: <movie>/sfm_<tag>/{fixed_lens,free_lens}/; pull with
+    --variant sfm_<tag>/fixed_lens (or free_lens)."""
+    extra = ["--start", start, "--end", end, "--stride", stride, "--mapper", mapper,
+             "--focal-guess", focal_guess, "--camera-model", camera_model] + (["--no-masks"] if no_masks else [])
+    out = sfm_colmap.remote(movie, video, tag, [str(x) for x in extra])
+    print(f"[sfm] done: {VOLUME_NAME}:{out}", flush=True)
 
 
 @app.local_entrypoint()
