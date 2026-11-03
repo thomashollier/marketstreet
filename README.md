@@ -71,8 +71,11 @@ python scripts/check_level.py outputs/<movie>/LoGeR_star      # also writes leve
 ```
 
 Measures, in a side view along the straight path, how much the camera height and the road surface "sag" compared with the
-straight line joining their two ends, as a % of path length (under 0.5% = level; bowl = middle lower, hill = middle higher), plus
-the change in ground slope from start to end. Tested on synthetic bowls/hills/flat streets; not yet run on real results.
+straight line joining their two ends, as a % of path length and in camera heights (under 0.5% = level; bowl = middle lower,
+hill = middle higher), plus the change in ground slope from start to end. Nothing is a fixed distance: the camera's height above
+the road is measured from the cloud, and the road search (`--band`, `--below`) is in camera heights, each point compared with the
+camera at its own position along the street. `--trim-end 0.02` drops a turn at the end of the line. The plot is vertically
+exaggerated. Tested on synthetic flat / hill / bowl streets at different scales (hill of 10 camera heights reads 9.6).
 
 ## Align to a straight camera path
 
