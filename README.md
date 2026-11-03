@@ -95,6 +95,9 @@ line joining its ends against the real street's, in metres, and draws the real s
 
 - `scripts/sfm_colmap.py` (Modal: `modal run modal_app.py::sfm ...`): masked SIFT, sequential matching, COLMAP
   mapping with one shared camera; `fixed_lens/` and `free_lens/` results.
+  For a long ride use `--mapper global`: on frames 1580-10500 of the 1906 scan the incremental mapper hinged where
+  big moving objects filled the view (a 246 m "hill"); the global mapper on the same matches follows the USGS
+  profile to 1.8 m RMS and the Ferry tower (not used in the solve) fits one 3D point to 2 px (90%).
 - `scripts/lens_lines.py`: radial distortion from lines that should be straight (on the 4K scan: negligible).
 - `scripts/track_landmark.py`: a landmark point (the Ferry Building tower top, `data/ferry_tower_top.csv`) in every
   frame from a few hand-placed anchors.
