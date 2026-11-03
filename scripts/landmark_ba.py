@@ -35,8 +35,9 @@ def landmark_obs(csv, rec, video_size):
 
 
 def init_point(rec, obs):
-    """Least-squares point nearest to all rays; if that lands behind the cameras (rays nearly parallel), put it far
-    ahead along the mean ray instead. Bundle adjustment refines it."""
+    """Starting position: the least-squares point nearest to all rays, or, if it fits better, the best of a set of
+    candidates along several cameras' rays at a range of distances (the rays are nearly parallel, and a bent model
+    can put the least-squares point behind the cameras). Scored by median reprojection error; BA refines it."""
     O, D = [], []
     for iid, uv in obs:
         im = rec.images[iid]
@@ -48,11 +49,13 @@ def init_point(rec, obs):
     O, D = np.array(O), np.array(D)
     M = sum(np.eye(3) - np.outer(d, d) for d in D)
     b = sum((np.eye(3) - np.outer(d, d)) @ o for o, d in zip(O, D))
-    X = np.linalg.solve(M, b)
+    cands = [np.linalg.solve(M, b)]
     span = np.linalg.norm(O[-1] - O[0])
-    if np.median([(X - o) @ d for o, d in zip(O, D)]) <= 0:
-        X = O[-1] + D[-1] * span
-    return X
+    for k in np.linspace(0, len(O) - 1, 15).astype(int):
+        for t in np.geomspace(0.05, 3.0, 25):
+            cands.append(O[k] + D[k] * t * span)
+    score = [np.median(reproj(rec, obs, X)) for X in cands]
+    return cands[int(np.argmin(score))]
 
 
 def reproj(rec, obs, X):
@@ -60,7 +63,7 @@ def reproj(rec, obs, X):
     for iid, uv in obs:
         im = rec.images[iid]
         p = rec.cameras[im.camera_id].img_from_cam(im.cam_from_world() * X)
-        e.append(np.linalg.norm(p - uv))
+        e.append(np.inf if p is None else np.linalg.norm(p - uv))      # None: behind the camera
     return np.array(e)
 
 
