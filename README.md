@@ -77,6 +77,29 @@ the road is measured from the cloud, and the road search (`--band`, `--below`) i
 camera at its own position along the street. `--trim-end 0.02` drops a turn at the end of the line. The plot is vertically
 exaggerated. Tested on synthetic flat / hill / bowl streets at different scales (hill of 10 camera heights reads 9.6).
 
+### Against the real street
+
+Market Street is not level: the USGS bare-earth profile (`data/market_street_profile.csv`, from
+`scripts/usgs_profile.py`) has a ~5 m crest about halfway between 8th St and the Ferry Building. Compare with it:
+
+```bash
+python scripts/check_level.py outputs/<movie>/LoGeR_star --trim-end 0.02 \
+    --profile data/market_street_profile.csv --profile-range 0 2487
+```
+
+`--profile-range` is where the first and last camera are along the profile (metres). The path is scaled to that
+distance; it prints the camera height this implies (a check: ~3 m on a cable car) and the road's height above the
+line joining its ends against the real street's, in metres, and draws the real street in green.
+
+## Lens, landmarks and structure from motion
+
+- `scripts/sfm_colmap.py` (Modal: `modal run modal_app.py::sfm ...`): masked SIFT, sequential matching, COLMAP
+  mapping with one shared camera; `fixed_lens/` and `free_lens/` results.
+- `scripts/lens_lines.py`: radial distortion from lines that should be straight (on the 4K scan: negligible).
+- `scripts/track_landmark.py`: a landmark point (the Ferry Building tower top, `data/ferry_tower_top.csv`) in every
+  frame from a few hand-placed anchors.
+- `scripts/landmark_ba.py`: adds that point to a COLMAP model as one 3D point seen in every frame and re-adjusts.
+
 ## Align to a straight camera path
 
 For a shot where the camera travels in a straight line, rotate the whole result so the path runs along +Z

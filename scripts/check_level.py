@@ -20,7 +20,11 @@ Each is reported as a "sag": a smooth fit compared with the straight line joinin
 street gives ~0 for both (under 0.5% of path length = level). "bowl" = the middle of the street is lower
 than its ends, "hill" = higher. Also reported: the same for the plan view (x, left-right) and the change in
 ground slope from start to end (a pitch drift shows up as a slope change).
-Writes <folder>/level_check.png if matplotlib is installed (side view in camera heights, exaggerated).
+With --profile (a real ground profile, e.g. from usgs_profile.py), the path is scaled to the real distance it
+covers (--profile-range) and the road's height above the line joining its ends is compared, in metres, with the
+real street's; the camera height this implies is printed as a check.
+Writes <folder>/level_check.png if matplotlib is installed (side view in camera heights, or metres with
+--profile, exaggerated).
 """
 import argparse
 import pathlib
@@ -83,6 +87,9 @@ def main():
     ap.add_argument("--below", type=float, default=0.5, help="road points must be at least this many camera heights under the camera")
     ap.add_argument("--bins", type=int, default=60, help="slices along the street")
     ap.add_argument("--trim-end", type=float, default=0.0, help="drop this fraction of cameras at the end (e.g. a turn at the end of the line)")
+    ap.add_argument("--profile", default=None, help="real ground profile CSV (distance_m, elevation_m), e.g. from usgs_profile.py")
+    ap.add_argument("--profile-range", type=float, nargs=2, default=None, metavar=("START_M", "END_M"),
+                    help="where the first and last camera are along the profile, metres (default: its whole length)")
     ap.add_argument("--no-plot", action="store_true")
     a = ap.parse_args()
     d = pathlib.Path(a.dir)
@@ -125,6 +132,25 @@ def main():
         print(f"  ground slope goes from {ang(zc.min()):+.1f} deg at the start to {ang(zc.max()):+.1f} deg at the end "
               f"(up positive; a level street is ~0 throughout)")
 
+    real = None
+    if a.profile and gh is not None:
+        # scale the path to the real distance it covers, then compare heights above the line joining the ends
+        P = np.genfromtxt(a.profile, delimiter=",", names=True)
+        r0, r1 = a.profile_range or (float(P["distance_m"][0]), float(P["distance_m"][-1]))
+        Lm = r1 - r0                                             # metres per path length
+        dist = lambda z: r0 + (z - cz.min()) / (cz.max() - cz.min()) * Lm
+        elev = np.interp(dist(zc), P["distance_m"], P["elevation_m"])
+        dep_real = elev - (elev[0] + (elev[-1] - elev[0]) * (zc - zc[0]) / (zc[-1] - zc[0]))
+        dep_rec = -(road - (road[0] + (road[-1] - road[0]) * (zc - zc[0]) / (zc[-1] - zc[0]))) * Lm
+        real = (dep_real, Lm)
+        i, j = np.argmax(np.abs(dep_real)), np.argmax(np.abs(dep_rec))
+        print(f"\ncompared with the real ground profile ({a.profile}, {r0:.0f}-{r1:.0f} m, path scaled to {Lm:.0f} m):")
+        print(f"  camera height this implies: {h * Lm:.2f} m above the road")
+        print(f"  real street:     {dep_real[i]:+6.1f} m from the line joining its ends at most, at {100 * (zc[i] - zc[0]) / (zc[-1] - zc[0]):.0f}% along")
+        print(f"  reconstruction:  {dep_rec[j]:+6.1f} m from the line joining its ends at most, at {100 * (zc[j] - zc[0]) / (zc[-1] - zc[0]):.0f}% along")
+        print(f"  difference: RMS {np.sqrt(np.mean((dep_rec - dep_real) ** 2)):.1f} m, max {np.abs(dep_rec - dep_real).max():.1f} m "
+              f"({100 * np.abs(dep_rec - dep_real).max() / Lm:.2f}% of the distance)")
+
     if not a.no_plot:
         try:
             import matplotlib
@@ -133,8 +159,8 @@ def main():
         except ImportError:
             print("\n(install matplotlib for a picture: pip install matplotlib)")
             return
-        u = h if h else 1.0                                  # plot unit: camera heights (or path lengths)
-        unit = "camera heights" if h else "path lengths"
+        u = 1.0 / real[1] if real else (h if h else 1.0)    # plot unit: metres, camera heights or path lengths
+        unit = "metres" if real else ("camera heights" if h else "path lengths")
         ref_z, ref_y = (zc, road) if gh is not None else (cz, C[:, 1])
         line = lambda z: ref_y[0] + (ref_y[-1] - ref_y[0]) * (z - ref_z[0]) / (ref_z[-1] - ref_z[0])
         fig, ax = plt.subplots(2, 1, figsize=(12, 7))
@@ -144,18 +170,22 @@ def main():
         ax[0].plot(cz, (C[:, 1] - line(cz)) / u, "r-", label="camera path")
         if gh is not None:
             ax[0].plot(zc, (road - line(zc)) / u, "b-", lw=2, label="road surface")
+        if real:
+            ax[0].plot(zc, -real[0], "g-", lw=2, label="real street (ground profile)")
         ax[0].axhline(0, color="k", ls="--", lw=1, label="straight line joining the road's ends" if gh is not None else "straight line")
-        dev = (C[:, 1] - line(cz)) / u
+        dev = np.r_[(C[:, 1] - line(cz)) / u, -real[0] if real else []]
         lim = max(3.0, 1.3 * np.abs(dev).max())
         ax[0].set_ylim(lim, -lim)                            # y down: flip so up is up
         ax[0].set_ylabel(f"height, {unit}\n(up is up)")
-        ax[0].set_title("side view, vertically exaggerated; a level street lies on the dashed line")
+        ax[0].set_title("side view, vertically exaggerated; a level street lies on the dashed line"
+                        + ("; the real street is green" if real else ""))
         ax[0].legend(loc="best", fontsize=8)
         ax[1].scatter(sub[:, 2], sub[:, 0] / u, s=0.05, c="0.8", rasterized=True)
         ax[1].plot(cz, C[:, 0] / u, "r-")
         ax[1].set_xlabel("distance along the street (path lengths)")
         xl = max(3.0, 1.3 * np.abs(C[:, 0] / u).max())
-        ax[1].set_ylim(-max(xl, a.band + 2), max(xl, a.band + 2))
+        xl = xl if real else max(xl, a.band + 2)
+        ax[1].set_ylim(-xl, xl)
         ax[1].set_ylabel(f"left-right, {unit}")
         ax[1].set_title("plan view")
         out = d / "level_check.png"
