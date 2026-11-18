@@ -99,6 +99,8 @@ line joining its ends against the real street's, in metres, and draws the real s
   big moving objects filled the view (a 246 m "hill"); the global mapper on the same matches, with the measured
   lens, follows the USGS profile to 0.7 m RMS and the Ferry tower (not used in the solve) fits one 3D point to 1.9 px
   (90%; median 1.1 px, 1543 frames; measured on `sfm_global27/fixed_lens`, the same as the first global run's 1.9 px).
+  So the model needs no tower correction: `landmark_ba.py` on it (`sfm_global27/landmark`) did not converge from its
+  coarse start (4.2 px at 90%) and is not an improvement.
   The worst frames are 8000-9499 (90% ~37 px in both models), so that looks like the track, not the model. This is
   the point refined to its best fit; `landmark_ba.py`'s "before" line uses only its coarse starting point (6.9 px here).
 - `scripts/lens_lines.py`: radial distortion from lines that should be straight (on the 4K scan: negligible).
@@ -129,6 +131,11 @@ line joining its ends against the real street's, in metres, and draws the real s
   ~2606 m, 140 m per global-model unit (in `sfm_global27` the fixes are at 4.37 and 13.055 units: first camera
   ~814 m, last ~2609 m). Use `--profile-range 814 2609` with `sfm_global27`, not `0 2487`: the road then matches
   the USGS profile to 0.7 m RMS (max 1.5 m), crest +5.5 m against the real +5.5 m (the old 21.5 deg model: +4.4 m).
+
+- `scripts/metric_align.py`: metric, levelled copy of `sfm_global27/fixed_lens` -> `fixed_lens/metric/`. 139.9 m per
+  model unit (the map fixes above); +X along the street = metres along `data/market_street_profile.csv`, +Z up =
+  USGS elevation (pitch fitted so the cameras follow the profile), +Y left. Result: road 0.52 m RMS from the
+  profile, crest +5.46 m (real +5.45), camera 2.0 m above the road in the cloud (rails 1.97).
 
 ## Align to a straight camera path
 
