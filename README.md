@@ -102,6 +102,10 @@ line joining its ends against the real street's, in metres, and draws the real s
   The worst frames are 8000-9499 (90% ~37 px in both models), so that looks like the track, not the model. This is
   the point refined to its best fit; `landmark_ba.py`'s "before" line uses only its coarse starting point (6.9 px here).
 - `scripts/lens_lines.py`: radial distortion from lines that should be straight (on the 4K scan: negligible).
+  Cross-check by bundle adjustment on `sfm_global27` (every 4th frame, 60K points, lens held at 27.2 deg, k1 free):
+  k1 = 0.014 (slight pincushion), 1.2 px at the corners and 0.7 px mid-edge, reprojection 0.96 -> 0.88 px. Freeing
+  the focal too gives 25.3 deg with k1 = 0.038 at the same error, so the images can't separate the two: keep the
+  measured lens and k1 = 0.
 - `scripts/track_landmark.py`: a landmark point (the Ferry Building tower top, `data/ferry_tower_top.csv`) in every
   frame from a few hand-placed anchors.
 - `scripts/landmark_ba.py`: adds that point to a COLMAP model as one 3D point seen in every frame and re-adjusts.
