@@ -83,12 +83,12 @@ Market Street is not level: the USGS bare-earth profile (`data/market_street_pro
 `scripts/usgs_profile.py`) has a ~5 m crest about halfway between 8th St and the Ferry Building. Compare with it:
 
 ```bash
-python scripts/check_level.py outputs/<movie>/LoGeR_star --trim-end 0.02 \
-    --profile data/market_street_profile.csv --profile-range 0 2487
+python scripts/check_level.py outputs/SF_1906_4k_gc/sfm_global27/fixed_lens \
+    --profile data/market_street_profile.csv --profile-range 814 2609
 ```
 
 `--profile-range` is where the first and last camera are along the profile (metres). The path is scaled to that
-distance; it prints the camera height this implies (a check: ~3 m on a cable car) and the road's height above the
+distance; it prints the camera height this implies (a check: the track gauge gives 1.97 m on the 1906 ride) and the road's height above the
 line joining its ends against the real street's, in metres, and draws the real street in green.
 
 ## Lens, landmarks and structure from motion
@@ -96,12 +96,35 @@ line joining its ends against the real street's, in metres, and draws the real s
 - `scripts/sfm_colmap.py` (Modal: `modal run modal_app.py::sfm ...`): masked SIFT, sequential matching, COLMAP
   mapping with one shared camera; `fixed_lens/` and `free_lens/` results.
   For a long ride use `--mapper global`: on frames 1580-10500 of the 1906 scan the incremental mapper hinged where
-  big moving objects filled the view (a 246 m "hill"); the global mapper on the same matches follows the USGS
-  profile to 1.8 m RMS and the Ferry tower (not used in the solve) fits one 3D point to 2 px (90%).
+  big moving objects filled the view (a 246 m "hill"); the global mapper on the same matches, with the measured
+  lens, follows the USGS profile to 0.7 m RMS and the Ferry tower (not used in the solve) fits one 3D point to 1.9 px
+  (90%; median 1.1 px, 1543 frames; measured on `sfm_global27/fixed_lens`, the same as the first global run's 1.9 px).
+  The worst frames are 8000-9499 (90% ~37 px in both models), so that looks like the track, not the model. This is
+  the point refined to its best fit; `landmark_ba.py`'s "before" line uses only its coarse starting point (6.9 px here).
 - `scripts/lens_lines.py`: radial distortion from lines that should be straight (on the 4K scan: negligible).
 - `scripts/track_landmark.py`: a landmark point (the Ferry Building tower top, `data/ferry_tower_top.csv`) in every
   frame from a few hand-placed anchors.
 - `scripts/landmark_ba.py`: adds that point to a COLMAP model as one 3D point seen in every frame and re-adjusts.
+- `scripts/rail_height.py`: camera height above the road from the track gauge, every frame. The car's two rails
+  meet at the road's vanishing point; camera height = effective gauge / (difference of the rails' slopes dx/dy),
+  with no focal length or pitch needed. Market St cable lines were standard gauge (4 ft 8.5 in) and strip centres
+  are measured, so the effective gauge is 1435 + 60 mm (rail head). 1906 scan: **1.97 m** (IQR 1.91-2.01, 1715 of
+  2231 frames, `data/rail_height.csv`); it also gives each frame's vanishing point (the horizon, after the grade).
+- `scripts/lens_from_landmarks.py`: focal length from known sizes, three ways: the Ferry tower top (245 ft) against
+  the rails' horizon and the map distance, the model's camera height against the rails, and the model's
+  facade-to-facade width against Market St's 120 ft. On the 1906 scan they give 3237 / 3392 / 3409 px on the
+  1618 px frame: **f = 3346 px (focal / width 2.07), hFOV 27.2 deg**, within 1% of the pilot bundle adjustment
+  (27.0 deg). The first global run's 21.5 deg was wrong: `sfm_colmap.py` locked the lens only for the incremental
+  mapper, and the global run drifted from its 3328 px start to 4215 px. Both mappers now hold it at
+  `--focal-guess`. Re-run with the measured lens (`--focal-guess 2.068 --fixed-lens`, tag `global27`, 84 min of
+  mapping): all 2231 frames, 0.79 px reprojection error, and the model now agrees with the known sizes it was not
+  fitted to: camera height 1.99 m (rails 1.97), street 37.0 m (120 ft = 36.6). Re-running in a work folder whose
+  database has another lens puts the new lens in and re-verifies the stored matches instead of matching again.
+- Map placement: the ride does not start at 8th St. The Call Building (tallest south-side points, 3rd St) and the
+  Ferry facade put the first camera (frame 1580) at ~800 m along the profile (near 5th St) and the last (10500) at
+  ~2606 m, 140 m per global-model unit (in `sfm_global27` the fixes are at 4.37 and 13.055 units: first camera
+  ~814 m, last ~2609 m). Use `--profile-range 814 2609` with `sfm_global27`, not `0 2487`: the road then matches
+  the USGS profile to 0.7 m RMS (max 1.5 m), crest +5.5 m against the real +5.5 m (the old 21.5 deg model: +4.4 m).
 
 ## Align to a straight camera path
 

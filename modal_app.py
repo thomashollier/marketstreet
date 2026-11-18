@@ -519,12 +519,14 @@ def crop(movie: str, video: str, out_movie: str, x: int, y: int, w: int, h: int)
 
 @app.local_entrypoint()
 def sfm(movie: str, video: str, tag: str, start: int, end: int, stride: int = 2, mapper: str = "incremental",
-        focal_guess: float = 1.43, camera_model: str = "SIMPLE_RADIAL", no_masks: bool = False):
+        focal_guess: float = 1.43, camera_model: str = "SIMPLE_RADIAL", no_masks: bool = False,
+        fixed_lens: bool = False):
     """Structure from motion with one shared camera over frames start..end of a movie on the volume
     (scripts/sfm_colmap.py). Results: <movie>/sfm_<tag>/{fixed_lens,free_lens}/; pull with
     --variant sfm_<tag>/fixed_lens (or free_lens)."""
     extra = ["--start", start, "--end", end, "--stride", stride, "--mapper", mapper,
-             "--focal-guess", focal_guess, "--camera-model", camera_model] + (["--no-masks"] if no_masks else [])
+             "--focal-guess", focal_guess, "--camera-model", camera_model] + (["--no-masks"] if no_masks else []) \
+        + (["--fixed-lens"] if fixed_lens else [])
     out = sfm_colmap.remote(movie, video, tag, [str(x) for x in extra])
     print(f"[sfm] done: {VOLUME_NAME}:{out}", flush=True)
 
