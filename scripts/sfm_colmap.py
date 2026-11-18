@@ -76,11 +76,26 @@ def make_masks(images, out, score=0.4, dilate=15):
 def run_sfm(work, images, camera_model, focal_guess, mapper, overlap, max_features, threads):
     import pycolmap
     db = work / "database.db"
-    if not db.exists():
-        h, w = __import__("cv2").imread(str(images[0])).shape[:2]
-        f = focal_guess * w if focal_guess else 1.2 * w
-        params = {"SIMPLE_RADIAL": f"{f},{w / 2},{h / 2},0", "RADIAL": f"{f},{w / 2},{h / 2},0,0",
-                  "OPENCV": f"{f},{f},{w / 2},{h / 2},0,0,0,0"}[camera_model]
+    h, w = __import__("cv2").imread(str(images[0])).shape[:2]
+    f = focal_guess * w if focal_guess else 1.2 * w
+    params = {"SIMPLE_RADIAL": f"{f},{w / 2},{h / 2},0", "RADIAL": f"{f},{w / 2},{h / 2},0,0",
+              "OPENCV": f"{f},{f},{w / 2},{h / 2},0,0,0,0"}[camera_model]
+    if db.exists():
+        # a database from an earlier run with another lens: put the new lens in, and drop the two-view geometries
+        # (their relative poses came from the old lens); the matching step below then re-verifies the stored
+        # matches with the new lens (cheap) instead of matching again
+        d = pycolmap.Database.open(db)
+        new = np.array([float(x) for x in params.split(",")])
+        for cam in d.read_all_cameras():
+            if cam.model.name == camera_model and np.allclose(cam.params, new, rtol=1e-4):
+                continue
+            print(f"[sfm] lens {np.round(cam.params, 4).tolist()} -> {new.tolist()}; re-verifying matches", flush=True)
+            cam.params = new
+            cam.has_prior_focal_length = True
+            d.update_camera(cam)
+            d.clear_two_view_geometries()
+        d.close()
+    else:
         ro = pycolmap.ImageReaderOptions(camera_model=camera_model, camera_params=params,
                                          mask_path=str(work / "masks"))
         eo = pycolmap.FeatureExtractionOptions()
@@ -103,6 +118,13 @@ def run_sfm(work, images, camera_model, focal_guess, mapper, overlap, max_featur
     if mapper == "global":
         go = pycolmap.GlobalPipelineOptions()
         go.num_threads = threads
+        go.ignore_watermarks = True
+        # lens held at --focal-guess, as in the incremental branch (the global defaults refine focal length and
+        # distortion in every bundle adjustment, and forward motion lets them run off: 21.5 deg on the 1906 ride
+        # against 27.2 deg measured from known sizes)
+        go.mapper.bundle_adjustment.refine_focal_length = False
+        go.mapper.bundle_adjustment.refine_extra_params = False
+        go.mapper.bundle_adjustment.refine_principal_point = False
         recs = pycolmap.global_mapping(db, work / "images", sparse, options=go)
     else:
         io = pycolmap.IncrementalPipelineOptions()
@@ -177,6 +199,7 @@ def export(rec, work, n_images):
     fov = np.degrees(2 * np.arctan(cam.width / 2 / cam.params[0]))
     camj = {"model": cam.model.name, "params": [float(x) for x in cam.params], "width": cam.width,
             "height": cam.height, "horizontal_fov_deg": float(fov)}
+    rec.update_point_3d_errors()                           # the global mapper leaves them stale (0.0002 px)
     stats = {"images_in": n_images, "images_registered": len(poses), "points": len(xyz),
              "mean_reprojection_error_px": float(rec.compute_mean_reprojection_error()),
              "track_length_mean": float(track.mean()), "track_length_p90": float(np.percentile(track, 90)),
