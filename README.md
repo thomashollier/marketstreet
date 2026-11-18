@@ -97,7 +97,10 @@ line joining its ends against the real street's, in metres, and draws the real s
   mapping with one shared camera; `fixed_lens/` and `free_lens/` results.
   For a long ride use `--mapper global`: on frames 1580-10500 of the 1906 scan the incremental mapper hinged where
   big moving objects filled the view (a 246 m "hill"); the global mapper on the same matches, with the measured
-  lens, follows the USGS profile to 0.7 m RMS and the Ferry tower (not used in the solve) fits one 3D point to 2 px (90%; measured on the first global run).
+  lens, follows the USGS profile to 0.7 m RMS and the Ferry tower (not used in the solve) fits one 3D point to 1.9 px
+  (90%; median 1.1 px, 1543 frames; measured on `sfm_global27/fixed_lens`, the same as the first global run's 1.9 px).
+  The worst frames are 8000-9499 (90% ~37 px in both models), so that looks like the track, not the model. This is
+  the point refined to its best fit; `landmark_ba.py`'s "before" line uses only its coarse starting point (6.9 px here).
 - `scripts/lens_lines.py`: radial distortion from lines that should be straight (on the 4K scan: negligible).
 - `scripts/track_landmark.py`: a landmark point (the Ferry Building tower top, `data/ferry_tower_top.csv`) in every
   frame from a few hand-placed anchors.
